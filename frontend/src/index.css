@@ -1,0 +1,160 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
+
+@import "tailwindcss";
+
+@theme {
+  --color-wine: #8B1A2A;
+  --color-wine-light: #A12A3B;
+  --color-wine-dark: #6D1421;
+  --color-cream: #F7F3EE;
+  --color-linen: #F2EDE5;
+  --color-confidence: #2D6A4F;
+  --color-pacing: #2C4F7C;
+  --color-composure: #B8860B;
+  --color-filler: #C13030;
+
+  --font-playfair: "Playfair Display", serif;
+  --font-dm: "DM Sans", sans-serif;
+}
+
+:root {
+  --wine: #8B1A2A;
+  --wine-light: rgba(139, 26, 42, 0.05);
+  --wine-dark: #6D1421;
+  --cream: #F7F3EE;
+  --linen: #F2EDE5;
+  --confidence: #2D6A4F;
+  --pacing: #2C4F7C;
+  --composure: #B8860B;
+  --filler: #C13030;
+  --track: #EDE8E0;
+}
+
+body {
+  background-color: var(--cream);
+  font-family: 'DM Sans', sans-serif;
+  color: #2D2D2D;
+  margin: 0;
+  padding: 0;
+}
+
+@keyframes pulse-dot {
+
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
+
+@keyframes mic-ring {
+  0% {
+    box-shadow: 0 0 0 0 rgba(193, 48, 48, 0.4);
+  }
+
+  70% {
+    box-shadow: 0 0 0 14px rgba(193, 48, 48, 0);
+  }
+
+  100% {
+    box-shadow: 0 0 0 0 rgba(193, 48, 48, 0);
+  }
+}
+
+@keyframes blink {
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0;
+  }
+}
+
+@keyframes bounce-dot {
+
+  0%,
+  80%,
+  100% {
+    transform: translateY(0);
+  }
+
+  40% {
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes fade-up {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-down {
+  0% {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.animate-pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+.animate-mic-ring {
+  animation: mic-ring 1.2s ease-out infinite;
+}
+
+.animate-blink {
+  animation: blink 1s step-end infinite;
+}
+
+.animate-fade-up {
+  animation: fade-up 0.35s ease forwards;
+}
+
+.animate-slide-down {
+  animation: slide-down 0.5s ease forwards;
+}
+
+.shimmer-bg {
+  background: linear-gradient(90deg, #F2EDE5 25%, #E8E3DB 50%, #F2EDE5 75%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite linear;
+}
+
+.font-playfair {
+  font-family: 'Playfair Display', serif;
+}
+
+.font-dm {
+  font-family: 'DM Sans', sans-serif;
+}
