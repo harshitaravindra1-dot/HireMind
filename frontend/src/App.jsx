@@ -1,12 +1,45 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { apiParseResume, apiGenerateQuestions, apiCoach, apiReport, apiAdaptiveNext } from './api.js';
+import { apiParseResume, apiGenerateQuestions, apiCoach, apiReport, apiAdaptiveNext, apiHealth } from './api.js';
 
-const FILLER_RE = /\b(um|uh|umm|uhh|like|you know|actually|basically|sort of|kind of)\b/gi;
+const FILLER_PHRASES = [
+  'um',
+  'uh',
+  'umm',
+  'uhh',
+  'hmm',
+  'huh',
+  'like',
+  'you know',
+  'i mean',
+  'actually',
+  'basically',
+  'literally',
+  'sort of',
+  'kind of',
+  'you see',
+  'right',
+];
+
+function normalizeSpeechText(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 function countFillers(text) {
-  if (!text) return 0;
-  const m = text.match(FILLER_RE);
-  return m ? m.length : 0;
+  const normalized = normalizeSpeechText(text);
+  if (!normalized) return 0;
+  let total = 0;
+  for (const phrase of FILLER_PHRASES) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`\\b${escaped}\\b`, 'g');
+    const m = normalized.match(re);
+    if (m) total += m.length;
+  }
+  return total;
 }
 
 // --- DUMMY DATA ---
@@ -75,6 +108,36 @@ const EMPTY_SCORES = {
   structure: 0,
 };
 
+const SAMPLE_CANDIDATE = {
+  name: 'Aarav Sharma',
+  title: 'Software Engineer',
+  skills: ['React', 'Node.js', 'TypeScript', 'AWS', 'SQL', 'System Design'],
+  experience: [
+    {
+      role: 'Software Engineer',
+      company: 'FinEdge',
+      duration: '2 years',
+      responsibilities: ['Built payment APIs', 'Reduced p95 latency by 30%', 'Owned incident response playbooks'],
+    },
+  ],
+  projects: [
+    { name: 'Realtime Fraud Alerting', techStack: ['Kafka', 'Node.js', 'Redis'], description: 'Scored transactions and alerted analysts in under 2s.' },
+    { name: 'Interview Prep Assistant', techStack: ['React', 'Express', 'LLM APIs'], description: 'Generated adaptive interview questions and coaching.' },
+  ],
+  education: [{ degree: 'B.Tech CSE', institution: 'NIT', year: '2023' }],
+  certifications: ['AWS Cloud Practitioner'],
+};
+
+const SAMPLE_QUESTION_META = [
+  { category: 'HR', question: 'Tell me about yourself and why this role fits your goals.', hint: 'Use present-past-future in 60-90 seconds.' },
+  { category: 'Technical', question: 'How would you design a rate limiter for a high-traffic public API?', topic: 'System Design', hint: 'Start with requirements, then data model and trade-offs.' },
+  { category: 'Technical', question: 'Explain how React rendering and memoization can improve performance.', topic: 'React', hint: 'Discuss re-renders, memo, useMemo, useCallback.' },
+  { category: 'Project', question: 'Walk through your Realtime Fraud Alerting project and key trade-offs.', relatedProject: 'Realtime Fraud Alerting', hint: 'Mention latency, reliability, and false positives.' },
+  { category: 'HR', question: 'Describe a time you received difficult feedback and how you responded.', hint: 'Show ownership and measurable improvement.' },
+];
+const INTERVIEW_COOLDOWN_MS = 2 * 60 * 60 * 1000;
+const INTERVIEW_COOLDOWN_KEY = 'interview_closed_at';
+
 export default function InterviewCoPilot() {
   // --- CORE STATE ---
   const [activeRole, setActiveRole] = useState('Software Engineer');
@@ -97,6 +160,9 @@ export default function InterviewCoPilot() {
   const [faceDetected, setFaceDetected] = useState(false);
   const [emotionHistory, setEmotionHistory] = useState([]); // last 10 readings
   const [eyeContactScore, setEyeContactScore] = useState(0);
+  const [multiFaceViolation, setMultiFaceViolation] = useState(false);
+  const [interviewTerminated, setInterviewTerminated] = useState(false);
+  const [terminationReason, setTerminationReason] = useState('');
 
   // --- RESUME STATE ---
   const [resumeData, setResumeData] = useState(null);
@@ -114,6 +180,7 @@ export default function InterviewCoPilot() {
   const [coachInsights, setCoachInsights] = useState({
     strengths: [],
     weaknesses: [],
+    transcriptEvidence: [],
     improvedAnswerExample: '',
     scores: EMPTY_SCORES,
   });
@@ -126,6 +193,10 @@ export default function InterviewCoPilot() {
   });
   const [adaptiveInfo, setAdaptiveInfo] = useState(null);
   const [adaptiveLoading, setAdaptiveLoading] = useState(false);
+  const [aiStatus, setAiStatus] = useState({ checked: false, online: false, message: 'Checking AI service...' });
+  const [fallbackState, setFallbackState] = useState({ active: false, reason: '' });
+  const [cooldownEndsAt, setCooldownEndsAt] = useState(null);
+  const [cooldownRemainingMs, setCooldownRemainingMs] = useState(0);
 
   // --- REFS ---
   const timerRef = useRef(null);
@@ -238,6 +309,9 @@ export default function InterviewCoPilot() {
     if (detectionIntervalRef.current) clearInterval(detectionIntervalRef.current);
     setCameraEnabled(false);
     setFaceDetected(false);
+    setMultiFaceViolation(false);
+    setInterviewTerminated(false);
+    setTerminationReason('');
     setDominantEmotion(null);
     setEmotions({ happy: 0, neutral: 0, fearful: 0, surprised: 0, sad: 0, angry: 0, disgusted: 0 });
   };
@@ -247,11 +321,27 @@ export default function InterviewCoPilot() {
     detectionIntervalRef.current = setInterval(async () => {
       if (!videoRef.current || videoRef.current.paused) return;
       try {
-        const detection = await window.faceapi
-          .detectSingleFace(videoRef.current, new window.faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.4 }))
+        const detections = await window.faceapi
+          .detectAllFaces(videoRef.current, new window.faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.4 }))
           .withFaceLandmarks(true)
           .withFaceExpressions();
-
+        if (detections.length > 1) {
+          setMultiFaceViolation(true);
+          setInterviewTerminated(true);
+          setTerminationReason('Interview terminated: multiple faces detected in camera view.');
+          setFaceDetected(true);
+          clearInterval(streamIntervalRef.current);
+          if (isRecordingRef.current) {
+            manualStopRef.current = true;
+            setIsRecording(false);
+            stopRecognitionNow();
+            setCoachState('idle');
+            setStreamText('Interview terminated due to multiple faces detected. Reset the interview to continue.');
+          }
+          return;
+        }
+        setMultiFaceViolation(false);
+        const detection = detections[0];
         if (detection) {
           setFaceDetected(true);
           const expr = detection.expressions;
@@ -369,6 +459,7 @@ export default function InterviewCoPilot() {
         parsed = out.parsed;
       } catch (apiErr) {
         console.warn('Resume parse API fallback:', apiErr);
+        setFallbackState({ active: true, reason: 'Resume parsing API failed. Using local parser fallback.' });
         parsed = parseResumeLocally(rawText);
       }
       setResumeState('generating');
@@ -380,6 +471,7 @@ export default function InterviewCoPilot() {
         personalizedQuestions = questionMeta.map((q) => q.question).filter(Boolean);
       } catch (apiErr) {
         console.warn('Question generation API fallback:', apiErr);
+        setFallbackState({ active: true, reason: 'Question generation API failed. Using local question fallback.' });
         personalizedQuestions = generatePersonalizedQuestions(parsed, activeRole);
       }
       if (!personalizedQuestions.length) {
@@ -421,6 +513,14 @@ export default function InterviewCoPilot() {
   const formatTime = (seconds) => {
     const mins = Math.floor(seconds / 60);
     return `${mins}:${(seconds % 60).toString().padStart(2, '0')}`;
+  };
+  const formatCooldown = (remainingMs) => {
+    const safe = Math.max(0, remainingMs);
+    const totalSeconds = Math.ceil(safe / 1000);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${hours} hr ${minutes} min ${seconds}s`;
   };
 
   const detectBehavioral = (val) => /tell me about a time|describe a time|give me an example/i.test(val);
@@ -560,6 +660,64 @@ export default function InterviewCoPilot() {
   }, [question, autoReadQuestion]);
 
   useEffect(() => {
+    let mounted = true;
+    const check = async () => {
+      try {
+        const h = await apiHealth();
+        if (!mounted) return;
+        if (h?.hasKey) {
+          setAiStatus({ checked: true, online: true, message: 'AI online' });
+          setFallbackState({ active: false, reason: '' });
+        } else {
+          setAiStatus({ checked: true, online: false, message: 'AI fallback mode (no API key)' });
+          setFallbackState((s) => ({ active: true, reason: s.reason || 'Backend missing API key. Using demo-safe fallbacks.' }));
+        }
+      } catch {
+        if (!mounted) return;
+        setAiStatus({ checked: true, online: false, message: 'AI fallback mode (service unavailable)' });
+        setFallbackState({ active: true, reason: 'Could not reach backend AI service.' });
+      }
+    };
+    check();
+    return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    const raw = window.localStorage.getItem(INTERVIEW_COOLDOWN_KEY);
+    if (!raw) return;
+    const closedAt = Number(raw);
+    if (!Number.isFinite(closedAt)) {
+      window.localStorage.removeItem(INTERVIEW_COOLDOWN_KEY);
+      return;
+    }
+    const expiresAt = closedAt + INTERVIEW_COOLDOWN_MS;
+    const remaining = expiresAt - Date.now();
+    if (remaining <= 0) {
+      window.localStorage.removeItem(INTERVIEW_COOLDOWN_KEY);
+      return;
+    }
+    setCooldownEndsAt(expiresAt);
+    setCooldownRemainingMs(remaining);
+  }, []);
+
+  useEffect(() => {
+    if (!cooldownEndsAt) return undefined;
+    const tick = () => {
+      const remaining = cooldownEndsAt - Date.now();
+      if (remaining <= 0) {
+        window.localStorage.removeItem(INTERVIEW_COOLDOWN_KEY);
+        setCooldownEndsAt(null);
+        setCooldownRemainingMs(0);
+        return;
+      }
+      setCooldownRemainingMs(remaining);
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [cooldownEndsAt]);
+
+  useEffect(() => {
     questionRef.current = question;
   }, [question]);
 
@@ -596,12 +754,18 @@ export default function InterviewCoPilot() {
       };
 
       try {
+        const priorForQuestion = attemptHistory.filter((r) => r.question === q);
+        const previousAttempt = priorForQuestion[priorForQuestion.length - 1];
         const data = await apiCoach({
           question: q,
           answer: answerText || '',
           isBehavioral,
           dominantEmotion,
           emotionTip,
+          attemptNumber: (previousAttempt ? priorForQuestion.length + 1 : 1),
+          previousAttemptSummary: previousAttempt
+            ? `Overall ${previousAttempt.overall}; strengths: ${(previousAttempt.strengths || []).join('; ')}; weaknesses: ${(previousAttempt.weaknesses || []).join('; ')}`
+            : '',
         });
         const fullText = `${data.intro || ''}${emotionTip ? `\n\n${emotionTip}` : ''}`;
         streamWords(fullText, () => {
@@ -621,11 +785,13 @@ export default function InterviewCoPilot() {
           category: getQuestionCategory(q),
           strengths: Array.isArray(data.strengths) ? data.strengths.slice(0, 3) : [],
           weaknesses: Array.isArray(data.weaknesses) ? data.weaknesses.slice(0, 3) : [],
+          transcriptEvidence: Array.isArray(data.transcriptEvidence) ? data.transcriptEvidence.slice(0, 4) : [],
           improvedAnswerExample: data.improvedAnswerExample || '',
         };
         setCoachInsights({
           strengths: record.strengths,
           weaknesses: record.weaknesses,
+          transcriptEvidence: record.transcriptEvidence,
           improvedAnswerExample: record.improvedAnswerExample,
           scores: record.scores,
         });
@@ -666,6 +832,7 @@ export default function InterviewCoPilot() {
         });
       } catch (e) {
         console.warn('Coach API fallback:', e);
+        setFallbackState({ active: true, reason: 'Coaching API failed. Using deterministic local coaching fallback.' });
         const type = isBehavioral ? 'behavioral' : 'technical';
         const content = COACHING[type];
         const fullText = `${content.intro}${emotionTip ? `\n\n${emotionTip}` : ''}`;
@@ -688,6 +855,7 @@ export default function InterviewCoPilot() {
         setCoachInsights({
           strengths: ['Good effort under pressure.'],
           weaknesses: ['Use more specific examples and measurable outcomes.'],
+          transcriptEvidence: answerText ? [`You said: "${answerText.slice(0, 120)}${answerText.length > 120 ? '…' : ''}"`] : [],
           improvedAnswerExample: '',
           scores: fallbackScores,
         });
@@ -785,7 +953,8 @@ export default function InterviewCoPilot() {
       const secs = (Date.now() - recordingStartRef.current) / 1000;
       const words = text.split(/\s+/).filter(Boolean).length;
       const wpm = secs >= 2 ? Math.round((words / secs) * 60) : 0;
-      setMetrics((prev) => ({ ...prev, pacing: wpm }));
+      const fillerCount = countFillers(text);
+      setMetrics((prev) => ({ ...prev, pacing: wpm, filler: fillerCount }));
       recognitionRef.current = null;
       if (micStreamRef.current) {
         micStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -817,6 +986,7 @@ export default function InterviewCoPilot() {
 
   // --- UI HANDLERS ---
   const handleRandomQuestion = () => {
+    if (interviewTerminated || cooldownEndsAt) return;
     const qs = getQuestionBank();
     setQuestion(qs[Math.floor(Math.random() * qs.length)]);
     setCoachState('idle');
@@ -825,7 +995,55 @@ export default function InterviewCoPilot() {
     setAnswerTranscript('');
   };
 
+  const handleLoadSampleCandidate = () => {
+    if (cooldownEndsAt) return;
+    const questionMeta = SAMPLE_QUESTION_META.map((q) => ({ ...q }));
+    const personalizedQuestions = questionMeta.map((q) => q.question);
+    setResumeData({
+      ...SAMPLE_CANDIDATE,
+      raw: '[Demo sample candidate loaded]',
+      personalizedQuestions,
+      questionMeta,
+      demoMode: true,
+    });
+    questionMetaMapRef.current = new Map(questionMeta.map((q) => [q.question, { category: q.category, topic: q.topic, hint: q.hint }]));
+    setQuestion(personalizedQuestions[0] || '');
+    setFallbackState((s) => ({ active: true, reason: s.reason || 'Demo mode sample loaded.' }));
+  };
+
+  const handleRetryAiStatus = async () => {
+    try {
+      const h = await apiHealth();
+      if (h?.hasKey) {
+        setAiStatus({ checked: true, online: true, message: 'AI online' });
+        setFallbackState({ active: false, reason: '' });
+      } else {
+        setAiStatus({ checked: true, online: false, message: 'AI fallback mode (no API key)' });
+        setFallbackState({ active: true, reason: 'Backend missing API key. Using demo-safe fallbacks.' });
+      }
+    } catch {
+      setAiStatus({ checked: true, online: false, message: 'AI fallback mode (service unavailable)' });
+      setFallbackState({ active: true, reason: 'Could not reach backend AI service.' });
+    }
+  };
+
   const handleRecordingToggle = async () => {
+    if (cooldownEndsAt) {
+      setSpeechError(`Interview is locked. Please wait ${formatCooldown(cooldownRemainingMs)} before next attempt.`);
+      return;
+    }
+    if (interviewTerminated) {
+      setSpeechError('Interview is terminated. Close session to continue later.');
+      return;
+    }
+    if (cameraEnabled && multiFaceViolation) {
+      setSpeechError('Interview blocked: multiple faces detected. Keep only one person in camera view.');
+      return;
+    }
+    if (!speechSupport) {
+      setSpeechError('Speech recognition unsupported here. Use Chrome/Edge on localhost.');
+      return;
+    }
     if (isRecording) {
       manualStopRef.current = true;
       setIsRecording(false);
@@ -849,6 +1067,7 @@ export default function InterviewCoPilot() {
   };
 
   const handleSpeechRetry = async () => {
+    if (cooldownEndsAt) return;
     const ok = await ensureMicPermission();
     if (!ok) return;
     if (!isRecordingRef.current) {
@@ -862,6 +1081,7 @@ export default function InterviewCoPilot() {
   };
 
   const handleCoachMe = () => {
+    if (interviewTerminated || cooldownEndsAt) return;
     if (coachState === 'loading' || !question) return;
     const text = transcriptRef.current || answerTranscript;
     const run = runCoachRef.current;
@@ -869,6 +1089,7 @@ export default function InterviewCoPilot() {
   };
 
   const handleRetrySameQuestion = () => {
+    if (interviewTerminated || cooldownEndsAt) return;
     setAdaptiveInfo(null);
     finalSpeechRef.current = '';
     transcriptRef.current = '';
@@ -877,6 +1098,7 @@ export default function InterviewCoPilot() {
   };
 
   const handleAdaptiveNext = async () => {
+    if (interviewTerminated || cooldownEndsAt) return;
     const pool = getQuestionBank();
     if (!pool?.length) return;
     setAdaptiveLoading(true);
@@ -903,6 +1125,7 @@ export default function InterviewCoPilot() {
         setAnswerTranscript('');
       }
     } catch {
+      setFallbackState({ active: true, reason: 'Adaptive API failed. Using local next-question selection.' });
       const local = pickAdaptiveLocal(pool, coachInsights?.scores, question);
       if (local) {
         setQuestion(local);
@@ -938,6 +1161,7 @@ export default function InterviewCoPilot() {
         const out = await apiReport(payload);
         narrative = out.narrative;
       } catch (e) {
+        setFallbackState({ active: true, reason: 'Report API failed. Building local report summary fallback.' });
         narrative = { summary: `Report narrative unavailable: ${e.message}` };
       }
       const lines = [
@@ -1011,6 +1235,25 @@ export default function InterviewCoPilot() {
     } finally {
       setReportLoading(false);
     }
+  };
+
+  const handleCloseInterviewSession = () => {
+    const closedAt = Date.now();
+    window.localStorage.setItem(INTERVIEW_COOLDOWN_KEY, String(closedAt));
+    setCooldownEndsAt(closedAt + INTERVIEW_COOLDOWN_MS);
+    setCooldownRemainingMs(INTERVIEW_COOLDOWN_MS);
+
+    setIsRecording(false);
+    stopRecognitionNow();
+    setCoachState('idle');
+    setStreamText('');
+    setAnswerTranscript('');
+    transcriptRef.current = '';
+    finalSpeechRef.current = '';
+    setInterviewTerminated(false);
+    setTerminationReason('');
+    setMultiFaceViolation(false);
+    disableCamera();
   };
 
   const status = isRecording ? { label: 'Listening', dot: 'bg-red-500 animate-pulse-dot' } : coachState === 'loading' ? { label: 'Thinking', dot: 'bg-gold-500' } : { label: 'Ready', dot: 'bg-green-500 animate-pulse-dot' };
@@ -1161,23 +1404,72 @@ export default function InterviewCoPilot() {
 
             <button
               onClick={cameraEnabled ? disableCamera : enableCamera}
+              disabled={Boolean(cooldownEndsAt)}
               className={`w-full mt-4 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${cameraEnabled ? 'bg-white border border-gray-200 text-gray-500 hover:bg-linen' : 'bg-wine text-white shadow-md hover:bg-wine-dark'}`}
             >
               {cameraEnabled ? 'Disable Camera' : '📷 Enable Camera'}
             </button>
             <div className="mt-2 text-center">
-              <span className="text-[9px] text-gray-300 italic">🔒 Video processed locally. Nothing is uploaded or stored.</span>
+              <span className="text-[9px] text-gray-300 italic">🔒 Camera processed locally; no video uploaded.</span>
             </div>
+            {multiFaceViolation && (
+              <div className="mt-2 p-2 bg-red-50 text-red-600 text-[11px] font-bold rounded-lg border border-red-100">
+                ⚠️ Multiple faces detected. Interview is terminated until only one person remains in frame.
+              </div>
+            )}
+            {interviewTerminated && (
+              <div className="mt-2 p-2 bg-red-50 text-red-700 text-[11px] font-bold rounded-lg border border-red-100 flex items-center justify-between gap-2">
+                <span>{terminationReason || 'Interview terminated due to policy violation.'}</span>
+                <button
+                  type="button"
+                  onClick={handleCloseInterviewSession}
+                  className="px-2 py-1 rounded-md border border-red-200 bg-white text-[10px] uppercase tracking-wider"
+                >
+                  CLOSE
+                </button>
+              </div>
+            )}
           </div>
         </aside>
 
         {/* CENTER PANEL */}
         <section className="flex-1 space-y-5 animate-fade-up [animation-delay:0.2s]">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border ${aiStatus.online ? 'bg-confidence/10 text-confidence border-confidence/20' : 'bg-[#FEF9ED] text-[#B8860B] border-[#E8D5A0]'}`}>
+              {aiStatus.checked ? aiStatus.message : 'Checking AI service...'}
+            </span>
+            {fallbackState.active && (
+              <>
+                <span className="px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider border bg-red-50 text-red-600 border-red-100">
+                  Fallback mode active
+                </span>
+                <button type="button" onClick={handleRetryAiStatus} className="text-[10px] font-black uppercase tracking-wider text-gray-400 hover:text-wine">
+                  Retry AI
+                </button>
+              </>
+            )}
+          </div>
+
+          {fallbackState.active && fallbackState.reason && (
+            <p className="text-[11px] text-gray-500 bg-cream/40 border border-linen rounded-lg px-3 py-2">
+              {fallbackState.reason}
+            </p>
+          )}
+
           {/* RESUME UPLOAD */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6 relative overflow-hidden">
             <div className="flex justify-between items-center mb-6">
               <span className="text-[10px] uppercase tracking-widest font-bold text-gray-400">Resume Parsing</span>
-              <span className="font-playfair italic text-linen text-xl">Upload</span>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleLoadSampleCandidate}
+                  className="text-[10px] font-black uppercase tracking-wider text-gray-400 hover:text-wine"
+                >
+                  Load Sample Candidate
+                </button>
+                <span className="font-playfair italic text-linen text-xl">Upload</span>
+              </div>
             </div>
 
             {!resumeData ? (
@@ -1285,12 +1577,12 @@ export default function InterviewCoPilot() {
             </div>
             <textarea value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Drag a file or pick a random question to begin..." className="w-full min-h-[112px] bg-cream border border-gray-200 rounded-xl p-4 text-sm font-medium focus:border-wine focus:ring-2 focus:ring-wine/5 outline-none placeholder:text-gray-300 transition-all resize-none" />
             <div className="mt-4 flex gap-3">
-              <button type="button" onClick={handleRecordingToggle} className={`w-[46px] h-[46px] rounded-full flex items-center justify-center transition-all ${isRecording ? 'bg-[#FEF0F0] border-2 border-red-500 animate-mic-ring' : 'bg-linen border border-gray-200 text-gray-500'}`}>{isRecording ? "⏹" : "🎙️"}</button>
-              <button type="button" onClick={handleRandomQuestion} className="flex-1 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-bold hover:border-wine/30 hover:bg-wine-50">🎲 Generate Question</button>
-              <button type="button" onClick={() => speakQuestion(question)} disabled={!question} className="px-3 rounded-xl border border-gray-200 text-sm font-bold text-gray-600 hover:border-wine/30 disabled:opacity-50">
+              <button type="button" disabled={interviewTerminated || Boolean(cooldownEndsAt)} onClick={handleRecordingToggle} className={`w-[46px] h-[46px] rounded-full flex items-center justify-center transition-all disabled:opacity-50 ${isRecording ? 'bg-[#FEF0F0] border-2 border-red-500 animate-mic-ring' : 'bg-linen border border-gray-200 text-gray-500'}`}>{isRecording ? "⏹" : "🎙️"}</button>
+              <button type="button" disabled={interviewTerminated || Boolean(cooldownEndsAt)} onClick={handleRandomQuestion} className="flex-1 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-bold hover:border-wine/30 hover:bg-wine-50 disabled:opacity-50">🎲 Generate Question</button>
+              <button type="button" onClick={() => speakQuestion(question)} disabled={!question || Boolean(cooldownEndsAt)} className="px-3 rounded-xl border border-gray-200 text-sm font-bold text-gray-600 hover:border-wine/30 disabled:opacity-50">
                 🔊
               </button>
-              <button type="button" onClick={handleCoachMe} disabled={coachState === 'loading' || !question} className={`flex-[1.2] rounded-xl text-sm font-bold shadow-md transition-all relative overflow-hidden ${coachState === 'loading' || !question ? 'bg-gray-100 text-gray-400' : 'bg-wine text-white hover:bg-wine-dark'}`}>
+              <button type="button" onClick={handleCoachMe} disabled={interviewTerminated || Boolean(cooldownEndsAt) || coachState === 'loading' || !question} className={`flex-[1.2] rounded-xl text-sm font-bold shadow-md transition-all relative overflow-hidden ${interviewTerminated || cooldownEndsAt || coachState === 'loading' || !question ? 'bg-gray-100 text-gray-400' : 'bg-wine text-white hover:bg-wine-dark'}`}>
                 {coachState === 'loading' ? <span className="flex items-center justify-center gap-2">Thinking<span className="animate-blink">...</span></span> : "⚡ Coach Me"}
                 {coachState === 'loading' && <div className="absolute inset-0 shimmer-bg opacity-10" />}
               </button>
@@ -1300,9 +1592,13 @@ export default function InterviewCoPilot() {
                 {isRecording ? 'Listening... speak clearly and pause between points.' : 'Use mic to answer; stop to trigger coaching.'}
               </p>
               <div className="flex items-center gap-3">
+                <span className={`px-2 py-1 rounded-full text-[9px] font-black uppercase tracking-wider border ${speechSupport && micTestState === 'ok' ? 'bg-confidence/10 text-confidence border-confidence/20' : 'bg-red-50 text-red-600 border-red-100'}`}>
+                  {speechSupport && micTestState === 'ok' ? 'Mic test passed' : 'Mic precheck needed'}
+                </span>
                 <button
                   type="button"
                   onClick={runMicTest}
+                  disabled={Boolean(cooldownEndsAt)}
                   className="text-[10px] font-black uppercase tracking-wider text-gray-400 hover:text-wine"
                 >
                   {micTestState === 'testing' ? 'Mic test…' : micTestState === 'ok' ? 'Mic: OK' : 'Mic test / Try again'}
@@ -1310,6 +1606,7 @@ export default function InterviewCoPilot() {
                 <button
                   type="button"
                   onClick={() => setAutoReadQuestion((v) => !v)}
+                  disabled={Boolean(cooldownEndsAt)}
                   className="text-[10px] font-black uppercase tracking-wider text-gray-400 hover:text-wine"
                 >
                   {autoReadQuestion ? 'Auto voice: ON' : 'Auto voice: OFF'}
@@ -1328,6 +1625,7 @@ export default function InterviewCoPilot() {
               <button
                 type="button"
                 onClick={handleSpeechRetry}
+                disabled={Boolean(cooldownEndsAt)}
                 className="mt-2 text-[10px] font-black uppercase tracking-wider text-wine hover:text-wine-dark"
               >
                 Retry listener
@@ -1359,11 +1657,26 @@ export default function InterviewCoPilot() {
                     <p>Top gains: {attemptContext.comparison.top3.map((t) => `${t.key} (${t.delta >= 0 ? '+' : ''}${t.delta})`).join(', ')}</p>
                   </div>
                 )}
+                <div className="mt-3 rounded-lg border border-gray-100 bg-white p-2">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-gray-400 mb-1">Improvement Proof</p>
+                  {!attemptContext.comparison ? (
+                    <p className="text-[11px] text-gray-500">Take second attempt to measure improvement.</p>
+                  ) : (
+                    <>
+                      <p className="text-[11px] text-gray-700">
+                        Attempt 1: <span className="font-bold">{attemptContext.comparison.from}</span> | Attempt 2: <span className="font-bold">{attemptContext.comparison.to}</span> | Delta: <span className="font-bold text-confidence">{attemptContext.comparison.delta >= 0 ? '+' : ''}{attemptContext.comparison.delta}</span>
+                      </p>
+                      <p className="text-[11px] text-gray-600 mt-1">
+                        Top 3 improved: {attemptContext.comparison.top3.map((t) => `${t.key} ${t.delta >= 0 ? '+' : ''}${t.delta}`).join(', ')}
+                      </p>
+                    </>
+                  )}
+                </div>
                 <div className="mt-2 flex gap-2">
-                  <button type="button" onClick={handleRetrySameQuestion} className="px-3 py-1.5 rounded-lg border border-gray-200 text-[10px] font-black uppercase tracking-wider text-gray-600 hover:border-wine/30">
+                  <button type="button" disabled={interviewTerminated || Boolean(cooldownEndsAt)} onClick={handleRetrySameQuestion} className="px-3 py-1.5 rounded-lg border border-gray-200 text-[10px] font-black uppercase tracking-wider text-gray-600 hover:border-wine/30 disabled:opacity-50">
                     Retry Same Question
                   </button>
-                  <button type="button" onClick={handleAdaptiveNext} disabled={adaptiveLoading} className="px-3 py-1.5 rounded-lg border border-gray-200 text-[10px] font-black uppercase tracking-wider text-gray-600 hover:border-wine/30 disabled:opacity-50">
+                  <button type="button" onClick={handleAdaptiveNext} disabled={interviewTerminated || Boolean(cooldownEndsAt) || adaptiveLoading} className="px-3 py-1.5 rounded-lg border border-gray-200 text-[10px] font-black uppercase tracking-wider text-gray-600 hover:border-wine/30 disabled:opacity-50">
                     {adaptiveLoading ? 'Choosing…' : 'Adaptive Next'}
                   </button>
                 </div>
@@ -1412,6 +1725,15 @@ export default function InterviewCoPilot() {
                           <p key={`wk-${i}`} className="text-gray-700 mb-1">• {s}</p>
                         ))}
                       </div>
+                      <div className="md:col-span-2 bg-cream/50 border border-linen rounded-xl p-3">
+                        <div className="text-[10px] uppercase font-black tracking-wider text-gray-400 mb-1">Transcript Evidence</div>
+                        {(coachInsights.transcriptEvidence?.length
+                          ? coachInsights.transcriptEvidence
+                          : ['No strong evidence extracted; try giving a more specific answer with examples.']
+                        ).map((s, i) => (
+                          <p key={`ev-${i}`} className="text-gray-700 mb-1">• {s}</p>
+                        ))}
+                      </div>
                       {!!coachInsights.improvedAnswerExample && (
                         <div className="md:col-span-2 bg-white border border-gray-100 rounded-xl p-3">
                           <div className="text-[10px] uppercase font-black tracking-wider text-gray-400 mb-1">Improved Answer Example</div>
@@ -1455,6 +1777,47 @@ export default function InterviewCoPilot() {
         </div>
         <button type="button" onClick={handleDownloadReport} disabled={reportLoading} className="text-[10px] font-black uppercase tracking-widest text-gray-400 hover:text-wine transition-colors disabled:opacity-50"><span>⬇</span> {reportLoading ? 'Preparing…' : 'Download Report'}</button>
       </footer>
+
+      {interviewTerminated && (
+        <div className="fixed inset-0 z-[100] bg-black/45 backdrop-blur-[1px] flex items-center justify-center px-6">
+          <div className="max-w-[720px] w-full bg-white border-2 border-red-200 rounded-2xl shadow-2xl p-8 text-center">
+            <p className="text-2xl md:text-3xl font-black text-red-600 leading-tight mb-3">
+              ⚠️ Interview Terminated — 2 People Detected in Frame
+            </p>
+            <p className="text-sm text-gray-600 mb-6">
+              {terminationReason || 'Integrity violation detected. Ensure only one person is visible to continue.'}
+            </p>
+            <div className="flex items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={handleDownloadReport}
+                className="px-4 py-2 rounded-xl border border-gray-200 text-xs font-black uppercase tracking-wider text-gray-700 hover:border-wine/30"
+              >
+                Download Report
+              </button>
+              <button
+                type="button"
+                onClick={handleCloseInterviewSession}
+                className="px-4 py-2 rounded-xl bg-wine text-white text-xs font-black uppercase tracking-wider"
+              >
+                CLOSE
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {cooldownEndsAt && (
+        <div className="fixed inset-0 z-[110] bg-black/55 backdrop-blur-[2px] flex items-center justify-center px-6">
+          <div className="max-w-[760px] w-full bg-white border-2 border-wine/20 rounded-2xl shadow-2xl p-8 text-center">
+            <p className="text-2xl md:text-3xl font-black text-wine leading-tight mb-3">
+              🔒 Interview Locked — Please wait {formatCooldown(cooldownRemainingMs)} before your next attempt
+            </p>
+            <p className="text-sm text-gray-600">
+              Session is closed. New interview actions are disabled until the cooldown expires.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

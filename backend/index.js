@@ -150,6 +150,8 @@ app.post('/api/coach', requireKey, async (req, res) => {
       isBehavioral,
       dominantEmotion,
       emotionTip,
+      attemptNumber,
+      previousAttemptSummary,
     } = req.body;
     if (!question || typeof question !== 'string') {
       return res.status(400).json({ error: 'Missing question' });
@@ -161,6 +163,7 @@ app.post('/api/coach', requireKey, async (req, res) => {
   "intro": "2-4 sentences of feedback on the candidate's answer (or note if empty).",
   "strengths": ["", "", ""],
   "weaknesses": ["", "", ""],
+  "transcriptEvidence": ["exact phrase or quote from the candidate transcript", "..."],
   "improvedAnswerExample": "",
   "scores": {
     "clarity": 0,
@@ -177,7 +180,9 @@ Rules:
 - For behavioral questions, fill STAR with concise bullets tailored to the answer.
 - For technical questions, STAR can be concise but still useful.
 - If the answer is empty, mention it in intro and provide corrective guidance.
-- improvedAnswerExample should be short and practical, as if a candidate would actually say it in an interview.`;
+- improvedAnswerExample should be short and practical, as if a candidate would actually say it in an interview.
+- transcriptEvidence must cite concrete snippets from the candidate answer when possible (exact words or concise paraphrase).
+- If this is not the first attempt, compare against prior attempt summary and reward real improvements.`;
 
     const user = `Interview question: ${question}
 
@@ -186,7 +191,10 @@ ${answerText || '[No answer captured — coach them to structure their next atte
 
 Question style: ${isBehavioral ? 'behavioral (use STAR)' : 'technical/other'}
 
-Optional context — dominant expression: ${dominantEmotion || 'unknown'}. Tip: ${emotionTip || 'n/a'}`;
+Optional context — dominant expression: ${dominantEmotion || 'unknown'}. Tip: ${emotionTip || 'n/a'}
+
+Attempt number: ${Number(attemptNumber) || 1}
+Previous attempt summary: ${previousAttemptSummary || 'n/a'}`;
 
     const msg = await anthropic.messages.create({
       model: MODEL,
@@ -204,6 +212,7 @@ Optional context — dominant expression: ${dominantEmotion || 'unknown'}. Tip: 
       intro: data.intro || '',
       strengths: Array.isArray(data.strengths) ? data.strengths.slice(0, 3) : [],
       weaknesses: Array.isArray(data.weaknesses) ? data.weaknesses.slice(0, 3) : [],
+      transcriptEvidence: Array.isArray(data.transcriptEvidence) ? data.transcriptEvidence.slice(0, 4) : [],
       improvedAnswerExample: data.improvedAnswerExample || '',
       scores: {
         clarity: Math.max(0, Math.min(100, Number(data.scores?.clarity) || 0)),
