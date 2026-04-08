@@ -219,6 +219,7 @@ export default function InterviewCoPilot() {
   const manualStopRef = useRef(false);
   const hasFinalizedRef = useRef(false);
   const speechSynthesisRef = useRef(null);
+  const selectedVoiceKeyRef = useRef('');
   const micStreamRef = useRef(null);
   const recognitionStartingRef = useRef(false);
   const recognitionRestartTimerRef = useRef(null);
@@ -537,8 +538,21 @@ export default function InterviewCoPilot() {
       utter.pitch = 1;
       utter.volume = 1;
       const voices = window.speechSynthesis.getVoices?.() || [];
-      const preferred = voices.find((v) => /en-US|en-GB/i.test(v.lang));
-      if (preferred) utter.voice = preferred;
+      const currentKey = selectedVoiceKeyRef.current;
+      let stableVoice = null;
+      if (currentKey) {
+        stableVoice = voices.find((v) => `${v.name}::${v.lang}` === currentKey) || null;
+      }
+      if (!stableVoice) {
+        stableVoice =
+          voices.find((v) => /en-US/i.test(v.lang)) ||
+          voices.find((v) => /en-GB/i.test(v.lang)) ||
+          voices.find((v) => /^en/i.test(v.lang)) ||
+          voices[0] ||
+          null;
+        if (stableVoice) selectedVoiceKeyRef.current = `${stableVoice.name}::${stableVoice.lang}`;
+      }
+      if (stableVoice) utter.voice = stableVoice;
       speechSynthesisRef.current = utter;
       window.speechSynthesis.speak(utter);
     } catch {
@@ -689,6 +703,27 @@ export default function InterviewCoPilot() {
   useEffect(() => {
     questionRef.current = question;
   }, [question]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return undefined;
+    const synth = window.speechSynthesis;
+    const resolveStableVoice = () => {
+      if (selectedVoiceKeyRef.current) return;
+      const voices = synth.getVoices?.() || [];
+      if (!voices.length) return;
+      const preferred =
+        voices.find((v) => /en-US/i.test(v.lang)) ||
+        voices.find((v) => /en-GB/i.test(v.lang)) ||
+        voices.find((v) => /^en/i.test(v.lang)) ||
+        voices[0];
+      if (preferred) selectedVoiceKeyRef.current = `${preferred.name}::${preferred.lang}`;
+    };
+    resolveStableVoice();
+    synth.onvoiceschanged = resolveStableVoice;
+    return () => {
+      synth.onvoiceschanged = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!ROLE_TABS.includes(activeRole)) setActiveRole('Software Engineer');
