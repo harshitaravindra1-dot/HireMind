@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { apiParseResume, apiGenerateQuestions, apiCoach, apiReport } from './api.js';
+import { apiParseResume, apiGenerateQuestions, apiCoach, apiReport, apiAdaptiveNext } from './api.js';
 
 const FILLER_RE = /\b(um|uh|umm|uhh|like|you know|actually|basically|sort of|kind of)\b/gi;
 
@@ -67,6 +67,14 @@ const INITIAL_METRICS = {
   filler: 0
 };
 
+const EMPTY_SCORES = {
+  clarity: 0,
+  technicalDepth: 0,
+  communication: 0,
+  confidence: 0,
+  structure: 0,
+};
+
 export default function InterviewCoPilot() {
   // --- CORE STATE ---
   const [activeRole, setActiveRole] = useState('Software Engineer');
@@ -75,7 +83,6 @@ export default function InterviewCoPilot() {
   const [coachState, setCoachState] = useState('idle'); // 'idle' | 'loading' | 'streaming' | 'done'
   const [sessionSeconds, setSessionSeconds] = useState(0);
   const [streamText, setStreamText] = useState('');
-  const [starContent, setStarContent] = useState({ s: '', t: '', a: '', r: '' });
   const [metrics, setMetrics] = useState(INITIAL_METRICS);
   const [followups, setFollowups] = useState(FOLLOWUPS.behavioral);
   const [isBehavioral, setIsBehavioral] = useState(false);
@@ -83,8 +90,8 @@ export default function InterviewCoPilot() {
   // --- EMOTION STATE ---
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [cameraEnabled, setCameraEnabled] = useState(false);
-  const [cameraError, setCameraError] = useState(null);
-  const [cameraPermission, setCameraPermission] = useState('prompt'); // prompt|granted|denied
+  const [_cameraError, setCameraError] = useState(null);
+  const [_cameraPermission, setCameraPermission] = useState('prompt'); // prompt|granted|denied
   const [emotions, setEmotions] = useState({ happy: 0, neutral: 0, fearful: 0, surprised: 0, sad: 0, angry: 0, disgusted: 0 });
   const [dominantEmotion, setDominantEmotion] = useState(null);
   const [faceDetected, setFaceDetected] = useState(false);
@@ -93,15 +100,32 @@ export default function InterviewCoPilot() {
 
   // --- RESUME STATE ---
   const [resumeData, setResumeData] = useState(null);
-  const [resumeFile, setResumeFile] = useState(null);
+  const [_resumeFile, setResumeFile] = useState(null);
   const [resumeState, setResumeState] = useState('idle'); // idle|uploading|parsing|extracting|done|error
   const [resumeError, setResumeError] = useState(null);
   const [dragOver, setDragOver] = useState(false);
-  const [pdfLibLoaded, setPdfLibLoaded] = useState(false);
-  const [mammothLoaded, setMammothLoaded] = useState(false);
+  const [_pdfLibLoaded, setPdfLibLoaded] = useState(false);
+  const [_mammothLoaded, setMammothLoaded] = useState(false);
   const [answerTranscript, setAnswerTranscript] = useState('');
   const [speechError, setSpeechError] = useState(null);
+  const [speechSupport] = useState(Boolean(window.SpeechRecognition || window.webkitSpeechRecognition));
+  const [micTestState, setMicTestState] = useState('idle'); // idle|testing|ok|failed
   const [reportLoading, setReportLoading] = useState(false);
+  const [coachInsights, setCoachInsights] = useState({
+    strengths: [],
+    weaknesses: [],
+    improvedAnswerExample: '',
+    scores: EMPTY_SCORES,
+  });
+  const [attemptHistory, setAttemptHistory] = useState([]);
+  const [attemptContext, setAttemptContext] = useState({
+    question: '',
+    attemptNo: 1,
+    showRetryPrompt: false,
+    comparison: null,
+  });
+  const [adaptiveInfo, setAdaptiveInfo] = useState(null);
+  const [adaptiveLoading, setAdaptiveLoading] = useState(false);
 
   // --- REFS ---
   const timerRef = useRef(null);
@@ -110,7 +134,7 @@ export default function InterviewCoPilot() {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const detectionIntervalRef = useRef(null);
-  const canvasRef = useRef(null);
+  const _canvasRef = useRef(null);
   const fileInputRef = useRef(null);
   const questionRef = useRef('');
   const recognitionRef = useRef(null);
@@ -119,6 +143,15 @@ export default function InterviewCoPilot() {
   const recordingStartRef = useRef(null);
   const sessionLogRef = useRef([]);
   const runCoachRef = useRef(async () => {});
+  const questionMetaMapRef = useRef(new Map());
+  const isRecordingRef = useRef(false);
+  const manualStopRef = useRef(false);
+  const hasFinalizedRef = useRef(false);
+  const speechSynthesisRef = useRef(null);
+  const micStreamRef = useRef(null);
+  const recognitionStartingRef = useRef(false);
+  const recognitionRestartTimerRef = useRef(null);
+  const [autoReadQuestion, setAutoReadQuestion] = useState(true);
 
   // --- SCRIPT INJECTION ---
   useEffect(() => {
@@ -165,7 +198,9 @@ export default function InterviewCoPilot() {
       const permResult = await navigator.permissions.query({ name: 'camera' });
       setCameraPermission(permResult.state);
       permResult.onchange = () => setCameraPermission(permResult.state);
-    } catch (e) { }
+    } catch {
+      // Camera permission API is not available in some browsers.
+    }
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -238,7 +273,9 @@ export default function InterviewCoPilot() {
         } else {
           setFaceDetected(false);
         }
-      } catch (e) { }
+      } catch {
+        // Ignore transient face-api detection errors.
+      }
     }, 600);
   };
 
@@ -265,7 +302,7 @@ export default function InterviewCoPilot() {
     }
     return new Promise((resolve) => {
       const reader = new FileReader();
-      reader.onload = (e) => resolve(e.target.result);
+      reader.onload = (event) => resolve(event.target.result);
       reader.readAsText(file);
     });
   };
@@ -319,6 +356,7 @@ export default function InterviewCoPilot() {
 
   const handleResumeUpload = async (file) => {
     if (!file) return;
+    questionMetaMapRef.current = new Map();
     setResumeFile(file);
     setResumeError(null);
     try {
@@ -353,6 +391,9 @@ export default function InterviewCoPilot() {
         personalizedQuestions,
         questionMeta,
       });
+      questionMetaMapRef.current = new Map(
+        questionMeta.map((q) => [q.question, { category: q.category, topic: q.topic, hint: q.hint }])
+      );
       setResumeState('done');
     } catch (err) {
       console.error('Resume Error:', err);
@@ -383,8 +424,140 @@ export default function InterviewCoPilot() {
   };
 
   const detectBehavioral = (val) => /tell me about a time|describe a time|give me an example/i.test(val);
+  const speakQuestion = (text) => {
+    if (!text || typeof window === 'undefined' || !window.speechSynthesis) return;
+    try {
+      if (speechSynthesisRef.current) window.speechSynthesis.cancel();
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.rate = 0.98;
+      utter.pitch = 1;
+      utter.volume = 1;
+      const voices = window.speechSynthesis.getVoices?.() || [];
+      const preferred = voices.find((v) => /en-US|en-GB/i.test(v.lang));
+      if (preferred) utter.voice = preferred;
+      speechSynthesisRef.current = utter;
+      window.speechSynthesis.speak(utter);
+    } catch {
+      // Ignore synthesis issues on unsupported browsers.
+    }
+  };
+
+  const runMicTest = async () => {
+    setMicTestState('testing');
+    setSpeechError(null);
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setMicTestState('failed');
+        setSpeechError('Microphone API is unavailable in this browser. Use Chrome/Edge on localhost.');
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      setMicTestState('ok');
+    } catch (err) {
+      console.error('Mic test failed:', err);
+      setMicTestState('failed');
+      if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
+        setSpeechError('Microphone permission denied. Enable mic permission for localhost and try again.');
+      } else if (err?.name === 'NotFoundError') {
+        setSpeechError('No microphone found. Connect a mic and try again.');
+      } else {
+        setSpeechError('Microphone check failed. Please try again.');
+      }
+    }
+  };
+
+  const ensureMicPermission = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setSpeechError('Microphone API unavailable. Use Chrome/Edge on localhost.');
+      return false;
+    }
+    try {
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((t) => t.stop());
+        micStreamRef.current = null;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      micStreamRef.current = stream;
+      setMicTestState('ok');
+      return true;
+    } catch (err) {
+      console.error('Mic permission/setup failed:', err);
+      if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
+        setSpeechError('Microphone permission denied. Enable mic access for localhost and try again.');
+      } else if (err?.name === 'NotFoundError') {
+        setSpeechError('No microphone found. Connect a mic and try again.');
+      } else {
+        setSpeechError('Could not access microphone. Please try again.');
+      }
+      setMicTestState('failed');
+      return false;
+    }
+  };
+
+  const stopRecognitionNow = () => {
+    if (recognitionRestartTimerRef.current) {
+      clearTimeout(recognitionRestartTimerRef.current);
+      recognitionRestartTimerRef.current = null;
+    }
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      // noop
+    }
+  };
+
+  const restartRecognitionSoon = (rec, delay = 200) => {
+    if (!isRecordingRef.current || manualStopRef.current) return;
+    if (recognitionRestartTimerRef.current) clearTimeout(recognitionRestartTimerRef.current);
+    recognitionRestartTimerRef.current = setTimeout(() => {
+      try {
+        if (!isRecordingRef.current || manualStopRef.current) return;
+        if (recognitionRef.current !== rec) return;
+        recognitionStartingRef.current = true;
+        rec.start();
+      } catch (err) {
+        console.error('Speech restart failed:', err);
+      } finally {
+        recognitionStartingRef.current = false;
+      }
+    }, delay);
+  };
+  const avgScore = (scores) => {
+    const vals = Object.values(scores || {}).map((n) => Number(n) || 0);
+    if (!vals.length) return 0;
+    return Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+  };
+
+  const getQuestionCategory = (q) => {
+    const meta = questionMetaMapRef.current.get(q);
+    if (meta?.category) return meta.category;
+    return detectBehavioral(q) ? 'HR' : 'Technical';
+  };
+
+  const pickAdaptiveLocal = (questionPool, scores, currentQuestion) => {
+    const overall = avgScore(scores);
+    const pool = (questionPool || []).filter((q) => q && q !== currentQuestion);
+    if (!pool.length) return null;
+    if (overall < 60) return pool[0];
+    if (overall >= 75) return pool[Math.min(pool.length - 1, 2)] || pool[pool.length - 1];
+    return pool[Math.floor(Math.random() * pool.length)];
+  };
 
   useEffect(() => { setIsBehavioral(detectBehavioral(question)); }, [question]);
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+  }, [isRecording]);
+
+  useEffect(() => {
+    if (autoReadQuestion && question) speakQuestion(question);
+  }, [question, autoReadQuestion]);
 
   useEffect(() => {
     questionRef.current = question;
@@ -401,7 +574,6 @@ export default function InterviewCoPilot() {
       clearInterval(streamIntervalRef.current);
       setCoachState('loading');
       setStreamText('');
-      setStarContent({ s: '', t: '', a: '', r: '' });
 
       const emotionTip =
         dominantEmotion && EMOTION_MAP[dominantEmotion]
@@ -439,15 +611,59 @@ export default function InterviewCoPilot() {
               `${prev}\n\nTry answering one of the follow-up questions on the right, or click 'Random Question' for a new topic.`
           );
         });
-        setStarContent({
-          s: data.star?.s || '',
-          t: data.star?.t || '',
-          a: data.star?.a || '',
-          r: data.star?.r || '',
+        const scores = { ...EMPTY_SCORES, ...(data.scores || {}) };
+        const record = {
+          question: q,
+          answer: answerText,
+          ts: Date.now(),
+          scores,
+          overall: avgScore(scores),
+          category: getQuestionCategory(q),
+          strengths: Array.isArray(data.strengths) ? data.strengths.slice(0, 3) : [],
+          weaknesses: Array.isArray(data.weaknesses) ? data.weaknesses.slice(0, 3) : [],
+          improvedAnswerExample: data.improvedAnswerExample || '',
+        };
+        setCoachInsights({
+          strengths: record.strengths,
+          weaknesses: record.weaknesses,
+          improvedAnswerExample: record.improvedAnswerExample,
+          scores: record.scores,
         });
         const fu = data.followups?.filter(Boolean) || [];
         setFollowups(fu.length ? fu : FOLLOWUPS[isBehavioral ? 'behavioral' : 'technical']);
-        sessionLogRef.current.push({ question: q, answer: answerText, ts: Date.now() });
+        sessionLogRef.current.push({
+          question: q,
+          answer: answerText,
+          ts: record.ts,
+          scores: record.scores,
+          overall: record.overall,
+        });
+        setAttemptHistory((prev) => {
+          const next = [...prev, record];
+          const byQuestion = next.filter((r) => r.question === q);
+          const attemptNo = byQuestion.length;
+          let comparison = null;
+          if (attemptNo >= 2) {
+            const a = byQuestion[attemptNo - 2];
+            const b = byQuestion[attemptNo - 1];
+            comparison = {
+              from: a.overall,
+              to: b.overall,
+              delta: b.overall - a.overall,
+              top3: Object.keys(b.scores)
+                .map((k) => ({ key: k, delta: (b.scores[k] || 0) - (a.scores[k] || 0) }))
+                .sort((x, y) => y.delta - x.delta)
+                .slice(0, 3),
+            };
+          }
+          setAttemptContext({
+            question: q,
+            attemptNo,
+            showRetryPrompt: attemptNo === 1,
+            comparison,
+          });
+          return next;
+        });
       } catch (e) {
         console.warn('Coach API fallback:', e);
         const type = isBehavioral ? 'behavioral' : 'technical';
@@ -460,9 +676,29 @@ export default function InterviewCoPilot() {
               `${prev}\n\nTry answering one of the follow-up questions on the right, or click 'Random Question' for a new topic.`
           );
         });
-        setStarContent({ s: content.s, t: content.t, a: content.a, r: content.r });
         setFollowups(FOLLOWUPS[type]);
-        sessionLogRef.current.push({ question: q, answer: answerText, ts: Date.now(), fallback: true });
+        const fallbackScores = {
+          ...EMPTY_SCORES,
+          clarity: answerText ? 58 : 35,
+          technicalDepth: isBehavioral ? 54 : 60,
+          communication: answerText ? 62 : 40,
+          confidence: metrics.confidence || 50,
+          structure: isBehavioral ? 65 : 52,
+        };
+        setCoachInsights({
+          strengths: ['Good effort under pressure.'],
+          weaknesses: ['Use more specific examples and measurable outcomes.'],
+          improvedAnswerExample: '',
+          scores: fallbackScores,
+        });
+        sessionLogRef.current.push({
+          question: q,
+          answer: answerText,
+          ts: Date.now(),
+          fallback: true,
+          scores: fallbackScores,
+          overall: avgScore(fallbackScores),
+        });
       }
     };
   }, [dominantEmotion, isBehavioral]);
@@ -480,12 +716,14 @@ export default function InterviewCoPilot() {
 
   useEffect(() => {
     if (!isRecording) return undefined;
-    const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const Rec = window.webkitSpeechRecognition || window.SpeechRecognition;
     if (!Rec) {
-      setSpeechError('Speech recognition is not supported in this browser.');
+      setSpeechError('Speech recognition is not supported in this browser. Use Chrome or Edge.');
       return undefined;
     }
     setSpeechError(null);
+    manualStopRef.current = false;
+    hasFinalizedRef.current = false;
     finalSpeechRef.current = '';
     transcriptRef.current = '';
     setAnswerTranscript('');
@@ -495,6 +733,11 @@ export default function InterviewCoPilot() {
     rec.continuous = true;
     rec.interimResults = true;
     rec.lang = 'en-US';
+    rec.maxAlternatives = 1;
+    rec.onstart = () => {
+      recognitionStartingRef.current = false;
+      setSpeechError(null);
+    };
 
     rec.onresult = (event) => {
       let interim = '';
@@ -512,18 +755,42 @@ export default function InterviewCoPilot() {
     };
 
     rec.onerror = (e) => {
-      if (e.error === 'not-allowed') setSpeechError('Microphone permission denied for speech.');
-      else if (e.error !== 'aborted') setSpeechError(e.error || 'Speech error');
+      console.error('Speech recognition error:', e);
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        setSpeechError('Microphone permission denied. Enable mic permission for localhost and try again.');
+        manualStopRef.current = true;
+        setIsRecording(false);
+      } else if (e.error === 'audio-capture') {
+        setSpeechError('No audio captured from microphone. Check input device and try again.');
+        manualStopRef.current = true;
+        setIsRecording(false);
+      } else if ((e.error === 'no-speech' || e.error === 'network') && isRecordingRef.current) {
+        // Temporary issue: keep interview alive by restarting listener.
+        restartRecognitionSoon(rec, 350);
+      } else if (e.error !== 'aborted') {
+        setSpeechError(e.error || 'Speech recognition error.');
+      }
     };
 
     rec.onend = () => {
       if (recognitionRef.current !== rec) return;
+      if (isRecordingRef.current && !manualStopRef.current) {
+        // Browser auto-stopped recognition (silence/network). Restart while still in interview mode.
+        restartRecognitionSoon(rec, 180);
+        return;
+      }
+      if (hasFinalizedRef.current) return;
+      hasFinalizedRef.current = true;
       const text = transcriptRef.current || '';
       const secs = (Date.now() - recordingStartRef.current) / 1000;
       const words = text.split(/\s+/).filter(Boolean).length;
       const wpm = secs >= 2 ? Math.round((words / secs) * 60) : 0;
       setMetrics((prev) => ({ ...prev, pacing: wpm }));
       recognitionRef.current = null;
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((t) => t.stop());
+        micStreamRef.current = null;
+      }
       const q = questionRef.current;
       if (q) {
         const run = runCoachRef.current;
@@ -533,15 +800,16 @@ export default function InterviewCoPilot() {
 
     recognitionRef.current = rec;
     try {
+      recognitionStartingRef.current = true;
       rec.start();
-    } catch (e) {
+    } catch (err) {
+      console.error('Speech start failed:', err);
       setSpeechError('Could not start speech recognition.');
+      recognitionStartingRef.current = false;
     }
 
     return () => {
-      try {
-        rec.stop();
-      } catch (_) { /* noop */ }
+      stopRecognitionNow();
     };
   }, [isRecording]);
 
@@ -557,11 +825,96 @@ export default function InterviewCoPilot() {
     setAnswerTranscript('');
   };
 
+  const handleRecordingToggle = async () => {
+    if (isRecording) {
+      manualStopRef.current = true;
+      setIsRecording(false);
+      stopRecognitionNow();
+      if (micStreamRef.current) {
+        micStreamRef.current.getTracks().forEach((t) => t.stop());
+        micStreamRef.current = null;
+      }
+      return;
+    }
+    // Prevent TTS from polluting recognition.
+    try {
+      window.speechSynthesis?.cancel();
+    } catch {
+      // noop
+    }
+    const ok = await ensureMicPermission();
+    if (!ok) return;
+    setSpeechError(null);
+    setIsRecording(true);
+  };
+
+  const handleSpeechRetry = async () => {
+    const ok = await ensureMicPermission();
+    if (!ok) return;
+    if (!isRecordingRef.current) {
+      setSpeechError('Microphone looks ready. Tap 🎙️ and start speaking.');
+      return;
+    }
+    const rec = recognitionRef.current;
+    if (rec && !recognitionStartingRef.current) {
+      restartRecognitionSoon(rec, 50);
+    }
+  };
+
   const handleCoachMe = () => {
     if (coachState === 'loading' || !question) return;
     const text = transcriptRef.current || answerTranscript;
     const run = runCoachRef.current;
     if (typeof run === 'function') run(text);
+  };
+
+  const handleRetrySameQuestion = () => {
+    setAdaptiveInfo(null);
+    finalSpeechRef.current = '';
+    transcriptRef.current = '';
+    setAnswerTranscript('');
+    setCoachState('idle');
+  };
+
+  const handleAdaptiveNext = async () => {
+    const pool = getQuestionBank();
+    if (!pool?.length) return;
+    setAdaptiveLoading(true);
+    try {
+      const scores = coachInsights?.scores || EMPTY_SCORES;
+      const out = await apiAdaptiveNext({
+        currentQuestion: question,
+        currentCategory: getQuestionCategory(question),
+        scores,
+        questionPool: pool.map((q) => ({
+          question: q,
+          category: getQuestionCategory(q),
+        })),
+      });
+      if (out?.nextQuestion) {
+        setQuestion(out.nextQuestion);
+        setAdaptiveInfo({
+          reason: out.reason || '',
+          difficulty: out.difficulty || 'intermediate',
+        });
+        setCoachState('idle');
+        finalSpeechRef.current = '';
+        transcriptRef.current = '';
+        setAnswerTranscript('');
+      }
+    } catch {
+      const local = pickAdaptiveLocal(pool, coachInsights?.scores, question);
+      if (local) {
+        setQuestion(local);
+        setAdaptiveInfo({
+          reason: 'Adaptive fallback selected from local pool.',
+          difficulty: 'intermediate',
+        });
+        setCoachState('idle');
+      }
+    } finally {
+      setAdaptiveLoading(false);
+    }
   };
 
   const handleDownloadReport = async () => {
@@ -570,6 +923,8 @@ export default function InterviewCoPilot() {
       const payload = {
         sessionSeconds,
         metrics,
+        latestScores: coachInsights.scores,
+        attemptHistory,
         emotionHistory,
         dominantEmotion,
         eyeContactScore,
@@ -612,10 +967,30 @@ export default function InterviewCoPilot() {
           ? narrative.strengths.map((s) => `  • ${s}`)
           : ['  (see summary)']),
         '',
+        'Weaknesses:',
+        ...(narrative?.weaknesses?.length
+          ? narrative.weaknesses.map((s) => `  • ${s}`)
+          : ['  (none)']),
+        '',
         'Improvements:',
         ...(narrative?.improvements?.length
           ? narrative.improvements.map((s) => `  • ${s}`)
           : ['  (see summary)']),
+        '',
+        '7-day action plan:',
+        ...(narrative?.sevenDayPlan?.length
+          ? narrative.sevenDayPlan.map((s) => `  • ${s}`)
+          : ['  (not available)']),
+        '',
+        'Top likely next questions:',
+        ...(narrative?.topLikelyNextQuestions?.length
+          ? narrative.topLikelyNextQuestions.map((s) => `  • ${s}`)
+          : ['  (not available)']),
+        '',
+        'Attempt-wise score trend:',
+        ...(narrative?.attemptWiseTrend?.length
+          ? narrative.attemptWiseTrend.map((s) => `  • ${s}`)
+          : attemptHistory.map((a, i) => `  • Attempt ${i + 1}: overall ${a.overall}`)),
         '',
         narrative?.closingNote ? `Closing: ${narrative.closingNote}` : '',
         '',
@@ -858,6 +1233,7 @@ export default function InterviewCoPilot() {
                     onClick={() => {
                       setResumeData(null);
                       sessionLogRef.current = [];
+                      questionMetaMapRef.current = new Map();
                     }}
                     className="text-[10px] font-black uppercase tracking-widest text-gray-300 hover:text-wine"
                   >
@@ -909,51 +1285,96 @@ export default function InterviewCoPilot() {
             </div>
             <textarea value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Drag a file or pick a random question to begin..." className="w-full min-h-[112px] bg-cream border border-gray-200 rounded-xl p-4 text-sm font-medium focus:border-wine focus:ring-2 focus:ring-wine/5 outline-none placeholder:text-gray-300 transition-all resize-none" />
             <div className="mt-4 flex gap-3">
-              <button type="button" onClick={() => setIsRecording(!isRecording)} className={`w-[46px] h-[46px] rounded-full flex items-center justify-center transition-all ${isRecording ? 'bg-[#FEF0F0] border-2 border-red-500 animate-mic-ring' : 'bg-linen border border-gray-200 text-gray-500'}`}>{isRecording ? "⏹" : "🎙️"}</button>
-              <button type="button" onClick={handleRandomQuestion} className="flex-1 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-bold hover:border-wine/30 hover:bg-wine-50">🎲 Random Question</button>
+              <button type="button" onClick={handleRecordingToggle} className={`w-[46px] h-[46px] rounded-full flex items-center justify-center transition-all ${isRecording ? 'bg-[#FEF0F0] border-2 border-red-500 animate-mic-ring' : 'bg-linen border border-gray-200 text-gray-500'}`}>{isRecording ? "⏹" : "🎙️"}</button>
+              <button type="button" onClick={handleRandomQuestion} className="flex-1 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-bold hover:border-wine/30 hover:bg-wine-50">🎲 Generate Question</button>
+              <button type="button" onClick={() => speakQuestion(question)} disabled={!question} className="px-3 rounded-xl border border-gray-200 text-sm font-bold text-gray-600 hover:border-wine/30 disabled:opacity-50">
+                🔊
+              </button>
               <button type="button" onClick={handleCoachMe} disabled={coachState === 'loading' || !question} className={`flex-[1.2] rounded-xl text-sm font-bold shadow-md transition-all relative overflow-hidden ${coachState === 'loading' || !question ? 'bg-gray-100 text-gray-400' : 'bg-wine text-white hover:bg-wine-dark'}`}>
                 {coachState === 'loading' ? <span className="flex items-center justify-center gap-2">Thinking<span className="animate-blink">...</span></span> : "⚡ Coach Me"}
                 {coachState === 'loading' && <div className="absolute inset-0 shimmer-bg opacity-10" />}
               </button>
             </div>
+            <div className="mt-2 flex items-center justify-between">
+              <p className="text-[10px] text-gray-400">
+                {isRecording ? 'Listening... speak clearly and pause between points.' : 'Use mic to answer; stop to trigger coaching.'}
+              </p>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={runMicTest}
+                  className="text-[10px] font-black uppercase tracking-wider text-gray-400 hover:text-wine"
+                >
+                  {micTestState === 'testing' ? 'Mic test…' : micTestState === 'ok' ? 'Mic: OK' : 'Mic test / Try again'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAutoReadQuestion((v) => !v)}
+                  className="text-[10px] font-black uppercase tracking-wider text-gray-400 hover:text-wine"
+                >
+                  {autoReadQuestion ? 'Auto voice: ON' : 'Auto voice: OFF'}
+                </button>
+              </div>
+            </div>
+            {!speechSupport && (
+              <p className="mt-1 text-[11px] text-red-500">Speech recognition unsupported here. Use Chrome/Edge on localhost.</p>
+            )}
             {(speechError || (answerTranscript && !isRecording)) && (
               <p className="mt-3 text-[11px] text-gray-500 leading-relaxed line-clamp-3">
                 {speechError ? `Speech: ${speechError}` : `Heard: ${answerTranscript}`}
               </p>
             )}
+            {speechError && (
+              <button
+                type="button"
+                onClick={handleSpeechRetry}
+                className="mt-2 text-[10px] font-black uppercase tracking-wider text-wine hover:text-wine-dark"
+              >
+                Retry listener
+              </button>
+            )}
             {isRecording && answerTranscript && (
               <p className="mt-2 text-[11px] text-gray-400 italic line-clamp-2">Live: {answerTranscript}</p>
             )}
-          </div>
-
-          {/* STAR FRAMEWORK CARD */}
-          {isBehavioral && (
-            <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100 animate-fade-up">
-              <div className="px-6 py-4 bg-cream/10 border-b border-linen flex justify-between items-center">
-                <span className="text-[10px] uppercase font-bold text-gray-400 tracking-widest">STAR Framework</span>
-                <span className="font-playfair italic text-gray-300 text-lg">Method</span>
-              </div>
-              <div className="p-0">
-                {[
-                  { l: 'S', name: 'Situation', color: '#2C4F7C', content: starContent.s, p: 'Setting the scene for your success...' },
-                  { l: 'T', name: 'Task', color: '#5E3A8A', content: starContent.t, p: 'The challenge you were faced with...' },
-                  { l: 'A', name: 'Action', color: '#B8860B', content: starContent.a, p: 'The strategic steps you took...' },
-                  { l: 'R', name: 'Result', color: '#2D6A4F', content: starContent.r, p: 'The quantitative/qualitative impact...' },
-                ].map((it) => (
-                  <div key={it.l} className="relative group border-b border-linen last:border-0 hover:bg-gray-50 transition-colors">
-                    <div className="absolute left-0 top-0 bottom-0 w-[3px]" style={{ backgroundColor: it.color }} />
-                    <div className="p-4 pl-6 flex items-start gap-4">
-                      <div className="w-7 h-7 rounded-full flex-shrink-0 flex items-center justify-center text-[10px] font-black text-white" style={{ backgroundColor: it.color }}>{it.l}</div>
-                      <div>
-                        <div className="text-[10px] uppercase font-black tracking-wider mb-0.5" style={{ color: it.color }}>{it.name}</div>
-                        <div className={`text-sm leading-relaxed ${it.content ? 'text-gray-800' : 'text-gray-300 italic'}`}>{it.content || it.p}</div>
-                      </div>
+            {coachState === 'done' && (
+              <div className="mt-4 rounded-xl border border-linen bg-cream/40 p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-gray-400">Scorecard</span>
+                  <span className="text-[11px] font-black text-wine">Overall {avgScore(coachInsights.scores)}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {Object.entries(coachInsights.scores || EMPTY_SCORES).map(([k, v]) => (
+                    <div key={k} className="text-[11px] text-gray-600 bg-white rounded-md px-2 py-1 border border-gray-100 flex justify-between">
+                      <span className="uppercase tracking-wide">{k}</span>
+                      <span className="font-bold">{v}</span>
                     </div>
+                  ))}
+                </div>
+                {attemptContext.showRetryPrompt && (
+                  <p className="mt-2 text-[11px] text-gray-500">Try a second attempt on this same question to see your improvement delta.</p>
+                )}
+                {attemptContext.comparison && (
+                  <div className="mt-2 text-[11px] text-gray-600">
+                    <p className="font-bold text-confidence">Attempt 2 delta: {attemptContext.comparison.delta >= 0 ? '+' : ''}{attemptContext.comparison.delta}</p>
+                    <p>Top gains: {attemptContext.comparison.top3.map((t) => `${t.key} (${t.delta >= 0 ? '+' : ''}${t.delta})`).join(', ')}</p>
                   </div>
-                ))}
+                )}
+                <div className="mt-2 flex gap-2">
+                  <button type="button" onClick={handleRetrySameQuestion} className="px-3 py-1.5 rounded-lg border border-gray-200 text-[10px] font-black uppercase tracking-wider text-gray-600 hover:border-wine/30">
+                    Retry Same Question
+                  </button>
+                  <button type="button" onClick={handleAdaptiveNext} disabled={adaptiveLoading} className="px-3 py-1.5 rounded-lg border border-gray-200 text-[10px] font-black uppercase tracking-wider text-gray-600 hover:border-wine/30 disabled:opacity-50">
+                    {adaptiveLoading ? 'Choosing…' : 'Adaptive Next'}
+                  </button>
+                </div>
+                {adaptiveInfo && (
+                  <p className="mt-2 text-[11px] italic text-gray-500">
+                    Next difficulty: {adaptiveInfo.difficulty}. {adaptiveInfo.reason}
+                  </p>
+                )}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           {/* LIVE COACHING */}
           <div className="bg-white rounded-2xl p-7 shadow-sm border border-gray-100 min-h-[220px] flex flex-col">
@@ -977,6 +1398,28 @@ export default function InterviewCoPilot() {
                 <div className="text-gray-800 leading-relaxed text-base font-medium">
                   {streamText} {coachState === 'streaming' && <span className="inline-block w-2.5 h-5 bg-wine ml-1 align-middle animate-blink" />}
                   <div ref={scrollRef} />
+                  {coachState === 'done' && (
+                    <div className="mt-4 grid md:grid-cols-2 gap-3 text-[12px]">
+                      <div className="bg-cream/50 border border-linen rounded-xl p-3">
+                        <div className="text-[10px] uppercase font-black tracking-wider text-gray-400 mb-1">Strengths</div>
+                        {(coachInsights.strengths?.length ? coachInsights.strengths : ['Keep answers structured and specific.']).map((s, i) => (
+                          <p key={`st-${i}`} className="text-gray-700 mb-1">• {s}</p>
+                        ))}
+                      </div>
+                      <div className="bg-cream/50 border border-linen rounded-xl p-3">
+                        <div className="text-[10px] uppercase font-black tracking-wider text-gray-400 mb-1">Weaknesses</div>
+                        {(coachInsights.weaknesses?.length ? coachInsights.weaknesses : ['Add more measurable impact and examples.']).map((s, i) => (
+                          <p key={`wk-${i}`} className="text-gray-700 mb-1">• {s}</p>
+                        ))}
+                      </div>
+                      {!!coachInsights.improvedAnswerExample && (
+                        <div className="md:col-span-2 bg-white border border-gray-100 rounded-xl p-3">
+                          <div className="text-[10px] uppercase font-black tracking-wider text-gray-400 mb-1">Improved Answer Example</div>
+                          <p className="text-gray-700">{coachInsights.improvedAnswerExample}</p>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

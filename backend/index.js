@@ -159,10 +159,25 @@ app.post('/api/coach', requireKey, async (req, res) => {
     const system = `You are an expert interview coach. Respond with ONLY valid JSON (no markdown):
 {
   "intro": "2-4 sentences of feedback on the candidate's answer (or note if empty).",
+  "strengths": ["", "", ""],
+  "weaknesses": ["", "", ""],
+  "improvedAnswerExample": "",
+  "scores": {
+    "clarity": 0,
+    "technicalDepth": 0,
+    "communication": 0,
+    "confidence": 0,
+    "structure": 0
+  },
   "star": { "s": "", "t": "", "a": "", "r": "" },
   "followups": ["", "", ""]
 }
-For behavioral questions, fill STAR with concise example bullets tailored to their answer. For technical questions, STAR may summarize a sample strong structure or stay shorter. If the answer is empty, say so in intro and give generic STAR scaffolding for the question type.`;
+Rules:
+- Scores are integers 0..100.
+- For behavioral questions, fill STAR with concise bullets tailored to the answer.
+- For technical questions, STAR can be concise but still useful.
+- If the answer is empty, mention it in intro and provide corrective guidance.
+- improvedAnswerExample should be short and practical, as if a candidate would actually say it in an interview.`;
 
     const user = `Interview question: ${question}
 
@@ -187,6 +202,16 @@ Optional context — dominant expression: ${dominantEmotion || 'unknown'}. Tip: 
     }
     res.json({
       intro: data.intro || '',
+      strengths: Array.isArray(data.strengths) ? data.strengths.slice(0, 3) : [],
+      weaknesses: Array.isArray(data.weaknesses) ? data.weaknesses.slice(0, 3) : [],
+      improvedAnswerExample: data.improvedAnswerExample || '',
+      scores: {
+        clarity: Math.max(0, Math.min(100, Number(data.scores?.clarity) || 0)),
+        technicalDepth: Math.max(0, Math.min(100, Number(data.scores?.technicalDepth) || 0)),
+        communication: Math.max(0, Math.min(100, Number(data.scores?.communication) || 0)),
+        confidence: Math.max(0, Math.min(100, Number(data.scores?.confidence) || 0)),
+        structure: Math.max(0, Math.min(100, Number(data.scores?.structure) || 0)),
+      },
       star: data.star || { s: '', t: '', a: '', r: '' },
       followups: Array.isArray(data.followups) ? data.followups.slice(0, 5) : [],
     });
@@ -196,11 +221,68 @@ Optional context — dominant expression: ${dominantEmotion || 'unknown'}. Tip: 
   }
 });
 
+app.post('/api/adaptive-next', requireKey, async (req, res) => {
+  try {
+    const { currentQuestion, currentCategory, scores, questionPool } = req.body;
+    if (!currentQuestion || typeof currentQuestion !== 'string') {
+      return res.status(400).json({ error: 'Missing currentQuestion' });
+    }
+    const safePool = Array.isArray(questionPool) ? questionPool.slice(0, 120) : [];
+    const system = `You are an expert interview panelist. Choose ONE best next question from the given pool adaptively:
+- If scores are weak (<60 in multiple areas), pick a foundational question.
+- If scores are strong (>=75 overall), pick a deeper/challenging question.
+- Prefer topic continuity with current question/category.
+Return ONLY valid JSON:
+{
+  "nextQuestion": "",
+  "reason": "",
+  "difficulty": "foundational|intermediate|advanced"
+}`;
+    const user = JSON.stringify({
+      currentQuestion,
+      currentCategory,
+      scores,
+      questionPool: safePool,
+    });
+    const msg = await anthropic.messages.create({
+      model: MODEL,
+      max_tokens: 1024,
+      system,
+      messages: [{ role: 'user', content: user }],
+    });
+    const out = msg.content?.map((b) => (b.type === 'text' ? b.text : '')).join('') || '';
+    const data = extractJson(out);
+    if (!data?.nextQuestion) {
+      return res.status(422).json({ error: 'Could not choose adaptive next question.' });
+    }
+    res.json({
+      nextQuestion: String(data.nextQuestion),
+      reason: String(data.reason || ''),
+      difficulty: ['foundational', 'intermediate', 'advanced'].includes(data.difficulty)
+        ? data.difficulty
+        : 'intermediate',
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || 'Adaptive question failed' });
+  }
+});
+
 app.post('/api/report', requireKey, async (req, res) => {
   try {
     const payload = req.body;
-    const system = `You are an interview coach. Given session JSON, write a short session summary: strengths, 3 actionable improvements, and encouragement. Return ONLY valid JSON:
-{"summary":"...","strengths":[],"improvements":[],"closingNote":"..."}`;
+    const system = `You are an interview coach. Given session JSON, return ONLY valid JSON:
+{
+  "summary":"...",
+  "strengths":["","",""],
+  "weaknesses":["","",""],
+  "improvements":["","",""],
+  "sevenDayPlan":["Day 1: ...","Day 2: ...","Day 3: ...","Day 4: ...","Day 5: ...","Day 6: ...","Day 7: ..."],
+  "topLikelyNextQuestions":["","","","",""],
+  "attemptWiseTrend":["Attempt 1: ...","Attempt 2: ..."],
+  "closingNote":"..."
+}
+Keep advice concrete and interview-specific.`;
 
     const msg = await anthropic.messages.create({
       model: MODEL,

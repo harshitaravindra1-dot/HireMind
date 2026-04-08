@@ -50,6 +50,15 @@ export async function apiReport(payload) {
   return handleJson(res);
 }
 
+export async function apiAdaptiveNext(payload) {
+  const res = await fetch('/api/adaptive-next', {
+    method: 'POST',
+    headers: jsonHeaders,
+    body: JSON.stringify(payload),
+  });
+  return handleJson(res);
+}
+
 export async function apiHealth() {
   const res = await fetch('/api/health');
   return handleJson(res);
