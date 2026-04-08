@@ -174,6 +174,7 @@ app.post('/api/coach', requireKey, async (req, res) => {
     "alternatives": [""]
   },
   "improvedAnswer": "A polished, hire-ready sample answer in first person.",
+  "idealAnswer": "",
   "practiceScript": {
     "openingLine": "",
     "corePoints": ["", "", ""],
@@ -196,6 +197,15 @@ Rules:
 - If the answer is empty, mention it in intro and provide corrective guidance.
 - improvedAnswer must be question-specific and aligned to user context.
 - Keep improvedAnswer in first person ("I"), 90-140 words, specific, outcome-focused, and confident.
+- "idealAnswer" is the single most important field. This is not a rewrite of what the user said — this is the perfect, complete answer a top 1% candidate would give if they had prepared for 2 weeks for this exact question at a top company. It must:
+  * Be 6-8 sentences in first person
+  * Open with a one-sentence hook that immediately signals competence ("When I joined X, the first thing I noticed was...")
+  * Include the STAR format naturally woven in — not labeled, just structured that way
+  * Contain at least one specific number, metric, or timeline (invent a plausible one)
+  * End with a reflection sentence that shows self-awareness ("That experience taught me that...")
+  * Sound like a real human speaking confidently, not a corporate document
+  * Directly and completely answer the exact question asked — if the question asks about conflict, the ideal answer must describe a conflict. If it asks about leadership, it must show leadership. Never be generic.
+  * Be something the user could read once and immediately understand exactly what they should have said and why it works
 - practiceScript must be directly related to this exact question and transcript.
 - practiceScript.corePoints should contain exactly 3 concise points.
 - whatToReplace should be phrase-level edits from user transcript (at least 2 when possible).
@@ -265,6 +275,7 @@ Client filler insights: ${fillerInsights ? JSON.stringify(fillerInsights) : 'n/a
         ],
       },
       improvedAnswer: safeImprovedAnswer,
+      idealAnswer: String(data.idealAnswer || '').trim(),
       practiceScript: {
         openingLine: String(data.practiceScript?.openingLine || '').trim(),
         corePoints: safeCorePoints.length ? safeCorePoints : ['Context', 'Action', 'Result'],

@@ -224,6 +224,7 @@ export default function InterviewCoPilot() {
     missingKeywords: [],
     fillerInsights: { count: 0, densityPer100Words: 0, topFillers: [], alternatives: [] },
     improvedAnswer: '',
+    idealAnswer: '',
     practiceScript: { openingLine: '', corePoints: [], closingLine: '', fullScript: '' },
     scores: EMPTY_SCORES,
   });
@@ -917,6 +918,7 @@ export default function InterviewCoPilot() {
           missingKeywords: Array.isArray(data.missingKeywords) ? data.missingKeywords.slice(0, 8) : [],
           fillerInsights: data.fillerInsights || extractFillerBreakdown(answerText || ''),
           improvedAnswer: data.improvedAnswer || data.improvedAnswerExample || buildHireReadyAnswer(q, isBehavioral, answerText, resumeData),
+          idealAnswer: data.idealAnswer || '',
           practiceScript: data.practiceScript || buildPracticeScript(
             q,
             data.improvedAnswer || data.improvedAnswerExample || buildHireReadyAnswer(q, isBehavioral, answerText, resumeData),
@@ -932,6 +934,7 @@ export default function InterviewCoPilot() {
           missingKeywords: record.missingKeywords,
           fillerInsights: record.fillerInsights,
           improvedAnswer: record.improvedAnswer,
+          idealAnswer: record.idealAnswer,
           practiceScript: record.practiceScript,
           scores: record.scores,
         });
@@ -1004,6 +1007,7 @@ export default function InterviewCoPilot() {
           missingKeywords: isBehavioral ? ['situation', 'action', 'result'] : ['trade-off', 'scale', 'impact'],
           fillerInsights: fillerInfo,
           improvedAnswer: buildHireReadyAnswer(q, isBehavioral, answerText, resumeData),
+          idealAnswer: '',
           practiceScript: buildPracticeScript(q, buildHireReadyAnswer(q, isBehavioral, answerText, resumeData), isBehavioral),
           scores: fallbackScores,
         });
@@ -1795,6 +1799,18 @@ export default function InterviewCoPilot() {
                         </div>
                         <div className="hire-ready-body">
                           {coachInsights.improvedAnswer || buildHireReadyAnswer(question, isBehavioral, answerTranscript, resumeData)}
+                        </div>
+                        <div className="ideal-answer-card">
+                          <div className="ideal-answer-header">
+                            <span>🏆 Ideal Answer</span>
+                            <p>What a top 1% candidate would say</p>
+                          </div>
+                          <div className="ideal-answer-body">
+                            {coachInsights.idealAnswer || 'Run Coach Me to generate your top-candidate benchmark answer.'}
+                          </div>
+                          <div className="ideal-answer-footer">
+                            <p>📌 Read this out loud twice before your next attempt</p>
+                          </div>
                         </div>
                         <div className="bg-white/70 border border-green-100 rounded-xl p-3 mb-3">
                           <h4 className="text-[12px] font-black uppercase tracking-wider text-green-800 mb-2">How the actual answer should be said</h4>

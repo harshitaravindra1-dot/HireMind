@@ -229,3 +229,38 @@ body {
   margin: 4px 0;
   font-size: 0.9rem;
 }
+
+.ideal-answer-card {
+  background: #0F172A;
+  border-left: 4px solid #F59E0B;
+  border-radius: 12px;
+  padding: 24px;
+  margin-top: 20px;
+  color: #F8FAFC;
+}
+
+.ideal-answer-header span {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #F59E0B;
+}
+
+.ideal-answer-header p {
+  font-size: 0.8rem;
+  color: #94A3B8;
+  margin: 2px 0 12px 0;
+}
+
+.ideal-answer-body {
+  font-size: 1rem;
+  line-height: 1.75;
+  color: #E2E8F0;
+}
+
+.ideal-answer-footer {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #1E293B;
+  font-size: 0.8rem;
+  color: #64748B;
+}

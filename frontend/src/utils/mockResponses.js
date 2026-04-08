@@ -7,6 +7,8 @@ export const MOCK_COACH_RESPONSE = {
   },
   improvedAnswer:
     'In my previous role, I led a team of 4 engineers to deliver a key product feature 2 weeks ahead of schedule by implementing daily standups and a clear sprint plan. This experience taught me that proactive communication is the key to project success.',
+  idealAnswer:
+    'When I joined TechCorp as a junior engineer, I noticed our deployment pipeline was causing 3-hour delays every release cycle — something the team had accepted as normal. I volunteered to own the problem, spent two weekends researching CI/CD tooling, and proposed switching to GitHub Actions with automated testing gates. I presented the plan to my team lead with a cost-benefit breakdown, got buy-in within a week, and implemented it over the following sprint. The result was deployment time dropping from 3 hours to 22 minutes, which the team still uses today. That experience taught me that the fastest way to grow is to find the problem everyone else has stopped seeing and fix it.',
   practiceScript: {
     openingLine: 'I have led high-impact delivery work under tight timelines.',
     corePoints: [
