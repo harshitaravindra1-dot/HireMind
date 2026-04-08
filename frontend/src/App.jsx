@@ -73,6 +73,16 @@ function extractFillerBreakdown(text) {
   return { count, densityPer100Words, topFillers, alternatives };
 }
 
+function extractQuestionKeywords(question) {
+  const stop = new Set(['the', 'a', 'an', 'and', 'or', 'to', 'of', 'in', 'for', 'with', 'on', 'is', 'are', 'you', 'your', 'how', 'what', 'why', 'when', 'where', 'do', 'does', 'did', 'would', 'could', 'should', 'tell', 'about']);
+  return String(question || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w && w.length > 2 && !stop.has(w))
+    .slice(0, 8);
+}
+
 // --- DUMMY DATA ---
 const ROLES = {
   'Software Engineer': ["Tell me about a time you resolved a critical production bug.", "How would you design a rate limiter for an API?", "Describe a time you disagreed with your tech lead."],
@@ -603,6 +613,36 @@ export default function InterviewCoPilot() {
     const fullScript = improvedAnswer || `${openingLine} ${corePoints.join('. ')}. ${closingLine}`;
     return { openingLine, corePoints, closingLine, fullScript };
   };
+  const buildQuestionSpecificReplacements = (q, answerText, behavioral) => {
+    const words = String(answerText || '').split(/\s+/).filter(Boolean);
+    const originalA = words.slice(0, 6).join(' ').trim() || 'I worked on this';
+    const originalB = words.slice(Math.max(0, words.length - 6)).join(' ').trim() || 'it went well';
+    const kws = extractQuestionKeywords(q);
+    const anchor = kws.slice(0, 2).join(' and ') || (behavioral ? 'my project context' : 'the technical requirements');
+    const betterA = behavioral
+      ? `I handled ${anchor} by taking ownership and structuring my approach in clear steps`
+      : `I addressed ${anchor} by defining requirements first, then making explicit technical trade-offs`;
+    const betterB = behavioral
+      ? 'This led to a measurable result (for example, faster delivery or higher quality) with clear impact'
+      : 'This improved performance and reliability with measurable impact and validation';
+    return [
+      { original: originalA, better: betterA, reason: 'Makes your response directly tied to the asked question.' },
+      { original: originalB, better: betterB, reason: 'Adds clear outcome and credibility.' },
+    ];
+  };
+  const normalizeReplacements = (incoming, q, answerText, behavioral) => {
+    const usable = Array.isArray(incoming)
+      ? incoming
+        .map((row) => ({
+          original: String(row?.original || '').trim(),
+          better: String(row?.better || '').trim(),
+          reason: String(row?.reason || '').trim(),
+        }))
+        .filter((row) => row.original && row.better)
+      : [];
+    if (usable.length >= 2) return usable.slice(0, 6);
+    return buildQuestionSpecificReplacements(q, answerText, behavioral);
+  };
   const comparePractice = (spoken, target) => {
     const a = normalizeSpeechText(spoken).split(/\s+/).filter(Boolean);
     const b = new Set(normalizeSpeechText(target).split(/\s+/).filter(Boolean));
@@ -873,7 +913,7 @@ export default function InterviewCoPilot() {
           weaknesses: Array.isArray(data.weaknesses) ? data.weaknesses.slice(0, 3) : [],
           transcriptEvidence: Array.isArray(data.transcriptEvidence) ? data.transcriptEvidence.slice(0, 4) : [],
           whatWasGood: Array.isArray(data.whatWasGood) ? data.whatWasGood.slice(0, 6) : [],
-          whatToReplace: Array.isArray(data.whatToReplace) ? data.whatToReplace.slice(0, 6) : [],
+          whatToReplace: normalizeReplacements(data.whatToReplace, q, answerText, isBehavioral),
           missingKeywords: Array.isArray(data.missingKeywords) ? data.missingKeywords.slice(0, 8) : [],
           fillerInsights: data.fillerInsights || extractFillerBreakdown(answerText || ''),
           improvedAnswer: data.improvedAnswer || data.improvedAnswerExample || buildHireReadyAnswer(q, isBehavioral, answerText, resumeData),
@@ -953,11 +993,8 @@ export default function InterviewCoPilot() {
         const fillerInfo = extractFillerBreakdown(answerText || '');
         const words = String(answerText || '').split(/\s+/).filter(Boolean);
         const whatToReplace = words.length
-          ? [
-            { original: words.slice(0, 4).join(' '), better: 'I led the implementation with clear milestones', reason: 'Makes ownership explicit.' },
-            { original: words.slice(-4).join(' '), better: 'This improved performance by X% with measurable impact', reason: 'Adds outcomes and credibility.' },
-          ]
-          : [];
+          ? buildQuestionSpecificReplacements(q, answerText, isBehavioral)
+          : buildQuestionSpecificReplacements(q, '', isBehavioral);
         setCoachInsights({
           strengths: ['Good effort under pressure.'],
           weaknesses: ['Use more specific examples and measurable outcomes.'],
@@ -1760,7 +1797,7 @@ export default function InterviewCoPilot() {
                           {coachInsights.improvedAnswer || buildHireReadyAnswer(question, isBehavioral, answerTranscript, resumeData)}
                         </div>
                         <div className="bg-white/70 border border-green-100 rounded-xl p-3 mb-3">
-                          <h4 className="text-[12px] font-black uppercase tracking-wider text-green-800 mb-2">How to answer this question</h4>
+                          <h4 className="text-[12px] font-black uppercase tracking-wider text-green-800 mb-2">How the actual answer should be said</h4>
                           <p className="text-gray-700 mb-1"><span className="font-semibold">Opening line:</span> {coachInsights.practiceScript?.openingLine || 'Start with direct context.'}</p>
                           <p className="text-gray-700 mb-1"><span className="font-semibold">3 core points:</span></p>
                           <ul className="text-gray-700 mb-1 ml-4 list-disc">
