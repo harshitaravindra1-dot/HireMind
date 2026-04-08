@@ -143,6 +143,7 @@ The three arrays must total exactly 20 questions.`;
 });
 
 app.post('/api/coach', requireKey, async (req, res) => {
+  // HIREMIND-AUDIT: clarity/confidence/relevance scoring contract is defined in this route.
   try {
     const {
       question,
@@ -161,26 +162,25 @@ app.post('/api/coach', requireKey, async (req, res) => {
     const system = `You are an expert interview coach. Respond with ONLY valid JSON (no markdown):
 {
   "intro": "2-4 sentences of feedback on the candidate's answer (or note if empty).",
+  "feedback": "One concise coaching paragraph.",
   "strengths": ["", "", ""],
   "weaknesses": ["", "", ""],
   "transcriptEvidence": ["exact phrase or quote from the candidate transcript", "..."],
-  "improvedAnswerExample": "",
-  "scores": {
-    "clarity": 0,
-    "technicalDepth": 0,
-    "communication": 0,
-    "confidence": 0,
-    "structure": 0
-  },
+  "improvedAnswerExample": "A polished, hire-ready sample answer in first person.",
+  "scores": { "clarity": 0, "confidence": 0, "relevance": 0 },
   "star": { "s": "", "t": "", "a": "", "r": "" },
   "followups": ["", "", ""]
 }
 Rules:
-- Scores are integers 0..100.
+- Score the answer on exactly three criteria:
+  - Clarity (0-10): How clear and understandable is the answer?
+  - Confidence (0-10): Does the speaker sound confident and assured?
+  - Relevance (0-10): How directly does the answer address the question?
 - For behavioral questions, fill STAR with concise bullets tailored to the answer.
 - For technical questions, STAR can be concise but still useful.
 - If the answer is empty, mention it in intro and provide corrective guidance.
-- improvedAnswerExample should be short and practical, as if a candidate would actually say it in an interview.
+- improvedAnswerExample must be a hire-ready answer the candidate can say verbatim in interview.
+- Keep improvedAnswerExample in first person ("I"), 90-140 words, specific, outcome-focused, and confident.
 - transcriptEvidence must cite concrete snippets from the candidate answer when possible (exact words or concise paraphrase).
 - If this is not the first attempt, compare against prior attempt summary and reward real improvements.`;
 
@@ -210,16 +210,15 @@ Previous attempt summary: ${previousAttemptSummary || 'n/a'}`;
     }
     res.json({
       intro: data.intro || '',
+      feedback: data.feedback || data.intro || '',
       strengths: Array.isArray(data.strengths) ? data.strengths.slice(0, 3) : [],
       weaknesses: Array.isArray(data.weaknesses) ? data.weaknesses.slice(0, 3) : [],
       transcriptEvidence: Array.isArray(data.transcriptEvidence) ? data.transcriptEvidence.slice(0, 4) : [],
       improvedAnswerExample: data.improvedAnswerExample || '',
       scores: {
-        clarity: Math.max(0, Math.min(100, Number(data.scores?.clarity) || 0)),
-        technicalDepth: Math.max(0, Math.min(100, Number(data.scores?.technicalDepth) || 0)),
-        communication: Math.max(0, Math.min(100, Number(data.scores?.communication) || 0)),
-        confidence: Math.max(0, Math.min(100, Number(data.scores?.confidence) || 0)),
-        structure: Math.max(0, Math.min(100, Number(data.scores?.structure) || 0)),
+        clarity: Math.max(0, Math.min(10, Number(data.scores?.clarity) || 0)),
+        confidence: Math.max(0, Math.min(10, Number(data.scores?.confidence) || 0)),
+        relevance: Math.max(0, Math.min(10, Number(data.scores?.relevance) || 0)),
       },
       star: data.star || { s: '', t: '', a: '', r: '' },
       followups: Array.isArray(data.followups) ? data.followups.slice(0, 5) : [],
@@ -278,6 +277,7 @@ Return ONLY valid JSON:
 });
 
 app.post('/api/report', requireKey, async (req, res) => {
+  // HIREMIND-AUDIT: /api/report exists for backward compatibility; frontend no longer uses it.
   try {
     const payload = req.body;
     const system = `You are an interview coach. Given session JSON, return ONLY valid JSON:
