@@ -7,6 +7,17 @@ export const MOCK_COACH_RESPONSE = {
   },
   improvedAnswer:
     'In my previous role, I led a team of 4 engineers to deliver a key product feature 2 weeks ahead of schedule by implementing daily standups and a clear sprint plan. This experience taught me that proactive communication is the key to project success.',
+  practiceScript: {
+    openingLine: 'I have led high-impact delivery work under tight timelines.',
+    corePoints: [
+      'I aligned the team with clear sprint goals and daily standups.',
+      'I removed blockers quickly and kept stakeholders updated.',
+      'We shipped ahead of schedule with measurable performance gains.',
+    ],
+    closingLine: 'That experience proved my ability to lead execution with impact.',
+    fullScript:
+      'I have led high-impact delivery work under tight timelines. I aligned the team with clear sprint goals and daily standups, removed blockers quickly, and kept stakeholders updated. We shipped ahead of schedule with measurable performance gains. That experience proved my ability to lead execution with impact.',
+  },
   strengths: ['Clear communication', 'Relevant experience mentioned'],
   weaknesses: ['Missing specific metrics', 'Could be more concise'],
   whatWasGood: ['"I led a team of 4 engineers"', '"delivered ... 2 weeks ahead of schedule"'],

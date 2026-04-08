@@ -214,8 +214,11 @@ export default function InterviewCoPilot() {
     missingKeywords: [],
     fillerInsights: { count: 0, densityPer100Words: 0, topFillers: [], alternatives: [] },
     improvedAnswer: '',
+    practiceScript: { openingLine: '', corePoints: [], closingLine: '', fullScript: '' },
     scores: EMPTY_SCORES,
   });
+  const [practiceMode, setPracticeMode] = useState(false);
+  const [practiceSimilarity, setPracticeSimilarity] = useState(0);
   const [attemptHistory, setAttemptHistory] = useState([]);
   const [attemptContext, setAttemptContext] = useState({
     question: '',
@@ -588,6 +591,25 @@ export default function InterviewCoPilot() {
     }
     return `For "${keyPhrase}", I would begin by clarifying requirements and constraints, then propose a practical design with trade-offs, edge cases, and validation plan. I would relate it to my background in ${resumeBits.join(', ') || 'software engineering'} and include one measurable result from prior work. ${proof} This answer directly addresses the question and demonstrates clear technical judgment.`;
   };
+  const buildPracticeScript = (q, improvedAnswer, behavioral) => {
+    const questionLead = String(q || '').split(/[?.!]/)[0] || 'this interview question';
+    const openingLine = behavioral
+      ? `For ${questionLead}, I would begin with clear context and ownership.`
+      : `For ${questionLead}, I would start with requirements and constraints.`;
+    const corePoints = behavioral
+      ? ['Situation and objective', 'Action with specific decisions', 'Measured result and learning']
+      : ['Requirements and approach', 'Trade-offs and technical choices', 'Validation and measurable impact'];
+    const closingLine = 'This demonstrates clear communication, relevance, and confidence.';
+    const fullScript = improvedAnswer || `${openingLine} ${corePoints.join('. ')}. ${closingLine}`;
+    return { openingLine, corePoints, closingLine, fullScript };
+  };
+  const comparePractice = (spoken, target) => {
+    const a = normalizeSpeechText(spoken).split(/\s+/).filter(Boolean);
+    const b = new Set(normalizeSpeechText(target).split(/\s+/).filter(Boolean));
+    if (!a.length || !b.size) return 0;
+    const matched = a.filter((w) => b.has(w)).length;
+    return Math.round((matched / Math.max(a.length, 1)) * 100);
+  };
   const speakQuestion = (text) => {
     if (!text || typeof window === 'undefined' || !window.speechSynthesis) return;
     try {
@@ -855,6 +877,11 @@ export default function InterviewCoPilot() {
           missingKeywords: Array.isArray(data.missingKeywords) ? data.missingKeywords.slice(0, 8) : [],
           fillerInsights: data.fillerInsights || extractFillerBreakdown(answerText || ''),
           improvedAnswer: data.improvedAnswer || data.improvedAnswerExample || buildHireReadyAnswer(q, isBehavioral, answerText, resumeData),
+          practiceScript: data.practiceScript || buildPracticeScript(
+            q,
+            data.improvedAnswer || data.improvedAnswerExample || buildHireReadyAnswer(q, isBehavioral, answerText, resumeData),
+            isBehavioral
+          ),
         };
         setCoachInsights({
           strengths: record.strengths,
@@ -865,6 +892,7 @@ export default function InterviewCoPilot() {
           missingKeywords: record.missingKeywords,
           fillerInsights: record.fillerInsights,
           improvedAnswer: record.improvedAnswer,
+          practiceScript: record.practiceScript,
           scores: record.scores,
         });
         const fu = data.followups?.filter(Boolean) || [];
@@ -939,6 +967,7 @@ export default function InterviewCoPilot() {
           missingKeywords: isBehavioral ? ['situation', 'action', 'result'] : ['trade-off', 'scale', 'impact'],
           fillerInsights: fillerInfo,
           improvedAnswer: buildHireReadyAnswer(q, isBehavioral, answerText, resumeData),
+          practiceScript: buildPracticeScript(q, buildHireReadyAnswer(q, isBehavioral, answerText, resumeData), isBehavioral),
           scores: fallbackScores,
         });
         sessionLogRef.current.push({
@@ -1047,6 +1076,10 @@ export default function InterviewCoPilot() {
         const run = runCoachRef.current;
         if (typeof run === 'function') run(text);
       }
+      if (practiceMode) {
+        const target = coachInsights.practiceScript?.fullScript || coachInsights.improvedAnswer || '';
+        setPracticeSimilarity(comparePractice(text, target));
+      }
     };
 
     recognitionRef.current = rec;
@@ -1062,7 +1095,7 @@ export default function InterviewCoPilot() {
     return () => {
       stopRecognitionNow();
     };
-  }, [isRecording]);
+  }, [isRecording, practiceMode, coachInsights.practiceScript, coachInsights.improvedAnswer]);
 
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollIntoView({ behavior: 'smooth' }); }, [streamText]);
 
@@ -1725,6 +1758,44 @@ export default function InterviewCoPilot() {
                         </div>
                         <div className="hire-ready-body">
                           {coachInsights.improvedAnswer || buildHireReadyAnswer(question, isBehavioral, answerTranscript, resumeData)}
+                        </div>
+                        <div className="bg-white/70 border border-green-100 rounded-xl p-3 mb-3">
+                          <h4 className="text-[12px] font-black uppercase tracking-wider text-green-800 mb-2">How to answer this question</h4>
+                          <p className="text-gray-700 mb-1"><span className="font-semibold">Opening line:</span> {coachInsights.practiceScript?.openingLine || 'Start with direct context.'}</p>
+                          <p className="text-gray-700 mb-1"><span className="font-semibold">3 core points:</span></p>
+                          <ul className="text-gray-700 mb-1 ml-4 list-disc">
+                            {(coachInsights.practiceScript?.corePoints?.length ? coachInsights.practiceScript.corePoints : ['Context', 'Action', 'Result']).map((p, i) => (
+                              <li key={`cp-${i}`}>{p}</li>
+                            ))}
+                          </ul>
+                          <p className="text-gray-700 mb-1"><span className="font-semibold">Closing line:</span> {coachInsights.practiceScript?.closingLine || 'End with measurable impact and learning.'}</p>
+                          <p className="text-gray-700"><span className="font-semibold">Full final script:</span> {coachInsights.practiceScript?.fullScript || coachInsights.improvedAnswer}</p>
+                        </div>
+                        <div className="flex items-center gap-2 mb-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const script = coachInsights.practiceScript?.fullScript || coachInsights.improvedAnswer || '';
+                              if (script) speakQuestion(script);
+                              setPracticeMode(true);
+                              setPracticeSimilarity(0);
+                            }}
+                            className="px-3 py-1.5 rounded-lg border border-green-200 bg-white text-[11px] font-black uppercase tracking-wider text-green-700"
+                          >
+                            🎯 Practice Mode
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleRecordingToggle}
+                            className="px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-[11px] font-black uppercase tracking-wider text-gray-600"
+                          >
+                            {isRecording ? 'Stop Practice' : 'Repeat Now'}
+                          </button>
+                          {practiceMode && (
+                            <span className="text-[11px] font-bold text-gray-600">
+                              Match score: {practiceSimilarity}%
+                            </span>
+                          )}
                         </div>
                         <div className="hire-ready-why">
                           <h4>Why this answer works:</h4>

@@ -174,6 +174,12 @@ app.post('/api/coach', requireKey, async (req, res) => {
     "alternatives": [""]
   },
   "improvedAnswer": "A polished, hire-ready sample answer in first person.",
+  "practiceScript": {
+    "openingLine": "",
+    "corePoints": ["", "", ""],
+    "closingLine": "",
+    "fullScript": ""
+  },
   "strengths": ["", "", ""],
   "weaknesses": ["", "", ""],
   "transcriptEvidence": ["exact phrase or quote from the candidate transcript", "..."],
@@ -190,6 +196,8 @@ Rules:
 - If the answer is empty, mention it in intro and provide corrective guidance.
 - improvedAnswer must be question-specific and aligned to user context.
 - Keep improvedAnswer in first person ("I"), 90-140 words, specific, outcome-focused, and confident.
+- practiceScript must be directly related to this exact question and transcript.
+- practiceScript.corePoints should contain exactly 3 concise points.
 - whatToReplace should be phrase-level edits from user transcript (at least 2 when possible).
 - Include fillerInsights and practical alternatives.
 - If this is not the first attempt, compare against prior attempt summary and reward real improvements.`;
@@ -237,6 +245,10 @@ Client filler insights: ${fillerInsights ? JSON.stringify(fillerInsights) : 'n/a
     const safeAlternatives = Array.isArray(data.fillerInsights?.alternatives)
       ? data.fillerInsights.alternatives.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 6)
       : [];
+    const safeCorePoints = Array.isArray(data.practiceScript?.corePoints)
+      ? data.practiceScript.corePoints.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 3)
+      : [];
+    const safeImprovedAnswer = String(data.improvedAnswer || data.improvedAnswerExample || '').trim();
 
     res.json({
       feedback: data.feedback || data.intro || '',
@@ -252,7 +264,13 @@ Client filler insights: ${fillerInsights ? JSON.stringify(fillerInsights) : 'n/a
           'Use transition words like "specifically", "therefore", "for example".',
         ],
       },
-      improvedAnswer: String(data.improvedAnswer || data.improvedAnswerExample || '').trim(),
+      improvedAnswer: safeImprovedAnswer,
+      practiceScript: {
+        openingLine: String(data.practiceScript?.openingLine || '').trim(),
+        corePoints: safeCorePoints.length ? safeCorePoints : ['Context', 'Action', 'Result'],
+        closingLine: String(data.practiceScript?.closingLine || '').trim(),
+        fullScript: String(data.practiceScript?.fullScript || safeImprovedAnswer || '').trim(),
+      },
       strengths: Array.isArray(data.strengths) ? data.strengths.slice(0, 3) : [],
       weaknesses: Array.isArray(data.weaknesses) ? data.weaknesses.slice(0, 3) : [],
       transcriptEvidence: Array.isArray(data.transcriptEvidence) ? data.transcriptEvidence.slice(0, 4) : [],
